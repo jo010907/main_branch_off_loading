@@ -239,21 +239,47 @@ def run_stage_server(args, device, splits):
     # 공인 IP가 제공되면 announce_maddrs에 사용, 없으면 local_ip 사용
     announce_ip = args.public_ip if args.public_ip else local_ip
 
+    # 공인 IP가 제공되면 모든 인터페이스(0.0.0.0)에서 리스닝하여 외부 접근 허용
+    # announce_maddrs에 공인 IP를 설정하여 다른 피어에게 알림
+    if args.public_ip:
+        host_maddrs = [f"/ip4/0.0.0.0/tcp/{args.dht_port}"]
+        announce_maddrs = [f"/ip4/{args.public_ip}/tcp/{args.dht_port}"]
+    else:
+        host_maddrs = [f"/ip4/{local_ip}/tcp/{args.dht_port}"]
+        announce_maddrs = None
+
     # Initialize DHT Network
     dht = DHT(
         start=True,
         initial_peers=initial_peers_list if initial_peers_list else None,
-        host_maddrs=[f"/ip4/{local_ip}/tcp/{args.dht_port}"],
-        announce_maddrs=[f"/ip4/{announce_ip}/tcp/{args.dht_port}"] if announce_ip != local_ip else None,
+        host_maddrs=host_maddrs,
+        announce_maddrs=announce_maddrs,
     )
 
     # 초기화된 DHT 네트워크의 multiaddr 리스트 반환
     visible = dht.get_visible_maddrs()
     peer_id = str(dht.peer_id)
-    if visible:
+    
+    # 공인 IP가 제공되었을 때, visible maddrs에 공인 IP가 포함되어 있는지 확인
+    if args.public_ip:
+        # visible maddrs를 문자열로 변환하여 공인 IP 포함 여부 확인
+        visible_str = [str(m) for m in visible] if visible else []
+        has_public_ip = any(args.public_ip in str(m) for m in visible_str)
+        
+        if not has_public_ip:
+            # 공인 IP를 사용한 multiaddr을 명시적으로 생성
+            public_maddr = f"/ip4/{args.public_ip}/tcp/{args.dht_port}/p2p/{peer_id}"
+            logger.warning(
+                f"DHT visible multiaddrs do not contain public IP {args.public_ip}. "
+                f"Use this multiaddr for --dht_initial_peers: {public_maddr}"
+            )
+            logger.info(f"DHT visible multiaddrs (may contain private IP): {visible}")
+        else:
+            logger.info(f"DHT visible multiaddrs (use for --dht_initial_peers): {visible}")
+    elif visible:
         logger.info(f"DHT visible multiaddrs (use for --dht_initial_peers): {visible}")
     else:
-        # 공인 IP가 있으면 그것을 사용, 없으면 local_ip 사용
+        # 공인 IP가 없고 visible maddrs도 없으면 local_ip 사용
         fallback_ip = announce_ip
         fallback = [f"/ip4/{fallback_ip}/tcp/{args.dht_port}/p2p/{peer_id}"]
         logger.info(
@@ -274,7 +300,12 @@ def run_stage_server(args, device, splits):
         try:
             logger.info(f"Initializing P2P for Stage{args.stage}...")
             # P2P Daemon 생성(hivemind 내장)
-            p2p = await P2P.create(host_maddrs=[f"/ip4/{local_ip}/tcp/{args.rpc_port}"])
+            # 공인 IP가 제공되면 모든 인터페이스(0.0.0.0)에서 리스닝하여 외부 접근 허용
+            if args.public_ip:
+                p2p_host_maddrs = [f"/ip4/0.0.0.0/tcp/{args.rpc_port}"]
+            else:
+                p2p_host_maddrs = [f"/ip4/{local_ip}/tcp/{args.rpc_port}"]
+            p2p = await P2P.create(host_maddrs=p2p_host_maddrs)
             logger.info(f"P2P initialized successfully, PeerID: {p2p.peer_id}")
             # get_visible_maddrs is async in this hivemind version
             visible_maddrs = await p2p.get_visible_maddrs() # P2P가 자동으로 감지한 외부 접근 가능한 multiaddr 리스트
@@ -283,6 +314,19 @@ def run_stage_server(args, device, splits):
             # visible_maddrs와 p2p_maddr를 병합
             if p2p_maddr:
                 p2p_maddrs.append(str(p2p_maddr))
+            
+            # 공인 IP가 제공되었을 때, visible maddrs에 공인 IP가 포함되어 있는지 확인
+            if args.public_ip:
+                has_public_ip = any(args.public_ip in m for m in p2p_maddrs)
+                if not has_public_ip:
+                    # 공인 IP를 사용한 multiaddr을 명시적으로 생성
+                    public_p2p_maddr = f"/ip4/{args.public_ip}/tcp/{args.rpc_port}/p2p/{p2p.peer_id}"
+                    logger.warning(
+                        f"Stage{args.stage} P2P visible maddrs do not contain public IP {args.public_ip}. "
+                        f"Use this multiaddr: {public_p2p_maddr}"
+                    )
+                    p2p_maddrs.append(public_p2p_maddr)
+            
             if p2p_maddrs:
                 logger.info(f"Stage{args.stage} P2P listen maddrs: {p2p_maddrs}")
             else:

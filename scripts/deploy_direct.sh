@@ -37,8 +37,12 @@ echo "의존성 설치 중..."
 pip install --upgrade pip
 pip install -r requirements.txt
 # hivemind는 소스에서 직접 설치 (플랫폼별 바이너리 문제 방지)
-echo "hivemind 설치 중 (소스에서 빌드)..."
-pip install --force-reinstall --no-binary=hivemind hivemind
+if pip show hivemind > /dev/null 2>&1; then
+    echo "hivemind가 이미 설치되어 있습니다. 설치 단계를 건너뜁니다."
+else
+    echo "hivemind 설치 중 (소스에서 빌드)..."
+    pip install --force-reinstall --no-binary=hivemind hivemind
+fi
 
 # 기존 프로세스 종료 (같은 stage가 실행 중인 경우)
 pkill -f "src.main --stage $STAGE" 2>/dev/null || true
