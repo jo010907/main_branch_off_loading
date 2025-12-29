@@ -91,6 +91,7 @@ cd my-petals
 ### 2. Stage1 배포 (DHT 부트스트랩)
 **인스턴스 1**에서 실행:
 
+**일반적인 경우 (포트 포워딩 없음):**
 ```bash
 chmod +x deploy_direct.sh
 ./deploy_direct.sh 1 gpt2 "10,20,30" "" <PUBLIC_IP_1> 8002 8003
@@ -100,27 +101,60 @@ tail -f stage1.log | grep "DHT visible multiaddrs"
 # 출력 예: INFO:__main__:DHT visible multiaddrs (use for --dht_initial_peers): [<Multiaddr /ip4/1.2.3.4/tcp/8002/p2p/12D3KooW...>]
 ```
 
-**중요**: Stage1의 DHT multiaddr을 복사하세요. 형식: `/ip4/<PUBLIC_IP_1>/tcp/8002/p2p/<PEER_ID>`
+**포트 포워딩 사용 시 (RunPod 등):**
+```bash
+# 예: RunPod에서 내부 포트 8002/8003이 외부 포트 10798/10799로 포워딩되는 경우
+./deploy_direct.sh 1 gpt2 "10,20,30" "" <PUBLIC_IP_1> 8002 8003 10798 10799
+
+# DHT multiaddr 확인 (외부 포트가 포함된 multiaddr이 출력됨)
+tail -f stage1.log | grep "DHT visible multiaddrs"
+# 출력 예: INFO:__main__:DHT visible multiaddrs (use for --dht_initial_peers): [<Multiaddr /ip4/1.2.3.4/tcp/10798/p2p/12D3KooW...>]
+```
+
+**중요**: Stage1의 DHT multiaddr을 복사하세요. 
+- 일반적인 경우: `/ip4/<PUBLIC_IP_1>/tcp/8002/p2p/<PEER_ID>`
+- 포트 포워딩 사용 시: `/ip4/<PUBLIC_IP_1>/tcp/<PUBLIC_DHT_PORT>/p2p/<PEER_ID>`
 
 ### 3. Stage2 배포
 **인스턴스 2**에서 실행:
 
+**일반적인 경우:**
 ```bash
 ./deploy_direct.sh 2 gpt2 "10,20,30" "/ip4/<PUBLIC_IP_1>/tcp/8002/p2p/<PEER_ID>" <PUBLIC_IP_2> 8004 8005
+```
+
+**포트 포워딩 사용 시:**
+```bash
+# 예: 내부 포트 8004/8005가 외부 포트 10800/10801로 포워딩되는 경우
+./deploy_direct.sh 2 gpt2 "10,20,30" "/ip4/<PUBLIC_IP_1>/tcp/<PUBLIC_DHT_PORT>/p2p/<PEER_ID>" <PUBLIC_IP_2> 8004 8005 10800 10801
 ```
 
 ### 4. Stage3 배포
 **인스턴스 3**에서 실행:
 
+**일반적인 경우:**
 ```bash
 ./deploy_direct.sh 3 gpt2 "10,20,30" "/ip4/<PUBLIC_IP_1>/tcp/8002/p2p/<PEER_ID>" <PUBLIC_IP_3> 8006 8007
+```
+
+**포트 포워딩 사용 시:**
+```bash
+# 예: 내부 포트 8006/8007이 외부 포트 10802/10803로 포워딩되는 경우
+./deploy_direct.sh 3 gpt2 "10,20,30" "/ip4/<PUBLIC_IP_1>/tcp/<PUBLIC_DHT_PORT>/p2p/<PEER_ID>" <PUBLIC_IP_3> 8006 8007 10802 10803
 ```
 
 ### 5. Stage0 배포 (클라이언트)
 **인스턴스 4**에서 실행:
 
+**일반적인 경우:**
 ```bash
 ./deploy_direct.sh 0 gpt2 "10,20,30" "/ip4/<PUBLIC_IP_1>/tcp/8002/p2p/<PEER_ID>" <PUBLIC_IP_4> 8008 8009 "Hello, how are you?" 32
+```
+
+**포트 포워딩 사용 시:**
+```bash
+# 예: 내부 포트 8008/8009가 외부 포트 10804/10805로 포워딩되는 경우
+./deploy_direct.sh 0 gpt2 "10,20,30" "/ip4/<PUBLIC_IP_1>/tcp/<PUBLIC_DHT_PORT>/p2p/<PEER_ID>" <PUBLIC_IP_4> 8008 8009 10804 10805 "Hello, how are you?" 32
 ```
 
 ### 로그 확인 (직접 실행)
@@ -131,6 +165,38 @@ tail -f stage<N>.log
 # 최근 로그
 tail -n 100 stage<N>.log
 ```
+
+---
+
+## 포트 포워딩 사용 시 (RunPod, 클라우드 플랫폼 등)
+
+일부 클라우드 플랫폼(RunPod 등)에서는 포트 포워딩을 사용합니다. 이 경우 내부 포트와 외부 포트가 다릅니다.
+
+### 포트 포워딩이란?
+- **내부 포트**: 애플리케이션이 실제로 리스닝하는 포트 (예: 8002, 8003)
+- **외부 포트**: 클라우드 플랫폼이 외부에서 접근 가능하도록 매핑한 포트 (예: 10798, 10799)
+
+### 사용 방법
+`deploy_direct.sh`의 8번째와 9번째 인자로 외부 포트를 지정합니다:
+
+```bash
+./deploy_direct.sh <STAGE> <MODEL> <SPLITS> <DHT_INITIAL_PEERS> <PUBLIC_IP> <DHT_PORT> <RPC_PORT> <PUBLIC_DHT_PORT> <PUBLIC_RPC_PORT> [PROMPT] [MAX_TOKENS]
+```
+
+**예시 (RunPod):**
+```bash
+# Stage1: 내부 포트 8002/8003, 외부 포트 10798/10799
+./deploy_direct.sh 1 gpt2 "10,20,30" "" 149.36.1.141 8002 8003 10798 10799
+
+# Stage2: 내부 포트 8004/8005, 외부 포트 10800/10801
+# Stage1의 multiaddr에는 외부 포트(10798)가 포함되어 있음
+./deploy_direct.sh 2 gpt2 "10,20,30" "/ip4/149.36.1.141/tcp/10798/p2p/12D3KooW..." 149.36.1.142 8004 8005 10800 10801
+```
+
+**중요 사항:**
+- 다른 인스턴스에서 연결할 때는 **외부 포트**를 사용한 multiaddr을 사용해야 합니다
+- 로그에서 출력되는 multiaddr을 확인하여 올바른 포트가 포함되어 있는지 확인하세요
+- 포트 포워딩을 사용하지 않는 경우에는 `PUBLIC_DHT_PORT`와 `PUBLIC_RPC_PORT` 인자를 생략할 수 있습니다
 
 ### 프로세스 관리 (직접 실행)
 ```bash
@@ -192,10 +258,17 @@ docker rm mini-petals-stage<N>
 ./deploy_direct.sh <STAGE> <MODEL> <SPLITS> <DHT_INITIAL_PEERS> <PUBLIC_IP> <DHT_PORT> <RPC_PORT> [PUBLIC_DHT_PORT] [PUBLIC_RPC_PORT] [PROMPT] [MAX_TOKENS]
 ```
 
-**예시:**
+**예시 (일반적인 경우):**
 - Stage1: `./deploy_direct.sh 1 gpt2 "10,20,30" "" 1.2.3.4 8002 8003`
 - Stage2: `./deploy_direct.sh 2 gpt2 "10,20,30" "/ip4/1.2.3.4/tcp/8002/p2p/12D3KooW..." 5.6.7.8 8004 8005`
 - Stage0: `./deploy_direct.sh 0 gpt2 "10,20,30" "/ip4/1.2.3.4/tcp/8002/p2p/12D3KooW..." 9.10.11.12 8008 8009 "Hello" 32`
+
+**예시 (포트 포워딩 사용 시, 예: RunPod):**
+- Stage1: `./deploy_direct.sh 1 gpt2 "10,20,30" "" 1.2.3.4 8002 8003 10798 10799`
+- Stage2: `./deploy_direct.sh 2 gpt2 "10,20,30" "/ip4/1.2.3.4/tcp/10798/p2p/12D3KooW..." 5.6.7.8 8004 8005 10800 10801`
+- Stage0: `./deploy_direct.sh 0 gpt2 "10,20,30" "/ip4/1.2.3.4/tcp/10798/p2p/12D3KooW..." 9.10.11.12 8008 8009 10804 10805 "Hello" 32`
+
+**참고**: 포트 포워딩을 사용하는 경우, `PUBLIC_DHT_PORT`와 `PUBLIC_RPC_PORT`는 외부에서 접근 가능한 포트 번호입니다. 내부 포트는 애플리케이션이 실제로 리스닝하는 포트이고, 외부 포트는 클라우드 플랫폼(RunPod 등)이 포워딩하는 포트입니다.
 
 ### DHT Multiaddr 추출
 
