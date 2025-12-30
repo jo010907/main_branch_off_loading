@@ -1,3 +1,6 @@
+#!/bin/bash
+# initial_install.sh - 가상환경 + 의존성 설치
+
 # Python 가상환경 확인 및 생성 (선택사항)
 if [ ! -d "venv" ]; then
     echo "가상환경 생성 중..."
