@@ -179,13 +179,8 @@ class Stage0(nn.Module):
             kwargs = dict(attention_mask=attention_mask, use_cache=use_cache)
             if self._supports_pos_ids[i]:
                 kwargs['position_ids'] = position_ids
-            # LLaMA: 내부에서 position_embeddings를 계산하도록 명시적으로 None 설정
-            if "position_embeddings" in kwargs:
-                kwargs["position_embeddings"] = None
-            else:
-                # 넣어두어도 None이면 내부 계산 경로를 사용
-                kwargs["position_embeddings"] = None
-            kwargs.pop("cache_position", None)
+            # LLaMA: position_embeddings와 cache_position을 kwargs에 포함하지 않음
+            # position_ids만 제공하면 내부적으로 RoPE를 계산함
             if self._supports_past_key_value[i]:
                 kwargs['past_key_value'] = pkv
             elif self._supports_layer_past[i]:
@@ -198,16 +193,7 @@ class Stage0(nn.Module):
             # GPT-2의 경우, use_cache=True일 때 (hidden_states, present)를 반환해야 함
             # 하지만 일부 버전에서는 (hidden_states,)만 반환할 수 있음
             # 이 경우 attention 모듈을 직접 호출하여 present를 얻어야 함
-            try:
-                out = layer(x, **kwargs)
-            except TypeError as e:
-                # position_embeddings 관련 오류가 아니면 상위로 전달
-                if "position_embeddings" in kwargs or "cannot unpack non-iterable NoneType" in str(e):
-                    kwargs.pop("position_embeddings", None)
-                    kwargs.pop("cache_position", None)
-                    out = layer(x, **kwargs)
-                else:
-                    raise
+            out = layer(x, **kwargs)
             
             # GPT-2 특별 처리: 출력이 len=1이고 use_cache=True인 경우
             # GPT-2Block이 use_cache=True일 때도 present를 반환하지 않는 경우
@@ -470,21 +456,13 @@ class StageSegment(nn.Module):
             kwargs = dict(attention_mask=attention_mask, use_cache=use_cache)
             if self._supports_pos_ids[i]:
                 kwargs['position_ids'] = position_ids
-            kwargs["position_embeddings"] = None
-            kwargs.pop("cache_position", None)
+            # LLaMA: position_embeddings와 cache_position을 kwargs에 포함하지 않음
+            # position_ids만 제공하면 내부적으로 RoPE를 계산함
             if self._supports_past_key_value[i]:
                 kwargs['past_key_value'] = pkv
             elif self._supports_layer_past[i]:
                 kwargs['layer_past'] = pkv
-            try:
-                out = layer(x, **kwargs)
-            except TypeError as e:
-                if "position_embeddings" in kwargs or "cannot unpack non-iterable NoneType" in str(e):
-                    kwargs.pop("position_embeddings", None)
-                    kwargs.pop("cache_position", None)
-                    out = layer(x, **kwargs)
-                else:
-                    raise
+            out = layer(x, **kwargs)
             x = out[0]
             if use_cache:
                 new_past.append(_get_past_from_output(out))
@@ -532,21 +510,13 @@ class StageLast(nn.Module):
             kwargs = dict(attention_mask=attention_mask, use_cache=use_cache)
             if self._supports_pos_ids[i]:
                 kwargs['position_ids'] = position_ids
-            kwargs["position_embeddings"] = None
-            kwargs.pop("cache_position", None)
+            # LLaMA: position_embeddings와 cache_position을 kwargs에 포함하지 않음
+            # position_ids만 제공하면 내부적으로 RoPE를 계산함
             if self._supports_past_key_value[i]:
                 kwargs['past_key_value'] = pkv
             elif self._supports_layer_past[i]:
                 kwargs['layer_past'] = pkv
-            try:
-                out = layer(x, **kwargs)
-            except TypeError as e:
-                if "position_embeddings" in kwargs or "cannot unpack non-iterable NoneType" in str(e):
-                    kwargs.pop("position_embeddings", None)
-                    kwargs.pop("cache_position", None)
-                    out = layer(x, **kwargs)
-                else:
-                    raise
+            out = layer(x, **kwargs)
             x = out[0]
             if use_cache:
                 new_past.append(_get_past_from_output(out))
