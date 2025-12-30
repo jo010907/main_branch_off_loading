@@ -179,6 +179,9 @@ class Stage0(nn.Module):
             kwargs = dict(attention_mask=attention_mask, use_cache=use_cache)
             if self._supports_pos_ids[i]:
                 kwargs['position_ids'] = position_ids
+            # 강제로 외부 position_embeddings/cache_position 전달을 차단 (LLaMA 내부 계산 사용)
+            kwargs.pop("position_embeddings", None)
+            kwargs.pop("cache_position", None)
             if self._supports_past_key_value[i]:
                 kwargs['past_key_value'] = pkv
             elif self._supports_layer_past[i]:
@@ -194,8 +197,8 @@ class Stage0(nn.Module):
             try:
                 out = layer(x, **kwargs)
             except TypeError as e:
-                # 일부 모델이 position_embeddings/cache_position을 지원하지 않는 경우 제거 후 재시도
-                if "position_embeddings" in kwargs:
+                # position_embeddings 관련 오류가 아니면 상위로 전달
+                if "position_embeddings" in kwargs or "cannot unpack non-iterable NoneType" in str(e):
                     kwargs.pop("position_embeddings", None)
                     kwargs.pop("cache_position", None)
                     out = layer(x, **kwargs)
@@ -463,6 +466,8 @@ class StageSegment(nn.Module):
             kwargs = dict(attention_mask=attention_mask, use_cache=use_cache)
             if self._supports_pos_ids[i]:
                 kwargs['position_ids'] = position_ids
+            kwargs.pop("position_embeddings", None)
+            kwargs.pop("cache_position", None)
             if self._supports_past_key_value[i]:
                 kwargs['past_key_value'] = pkv
             elif self._supports_layer_past[i]:
@@ -470,7 +475,7 @@ class StageSegment(nn.Module):
             try:
                 out = layer(x, **kwargs)
             except TypeError as e:
-                if "position_embeddings" in kwargs:
+                if "position_embeddings" in kwargs or "cannot unpack non-iterable NoneType" in str(e):
                     kwargs.pop("position_embeddings", None)
                     kwargs.pop("cache_position", None)
                     out = layer(x, **kwargs)
@@ -523,6 +528,8 @@ class StageLast(nn.Module):
             kwargs = dict(attention_mask=attention_mask, use_cache=use_cache)
             if self._supports_pos_ids[i]:
                 kwargs['position_ids'] = position_ids
+            kwargs.pop("position_embeddings", None)
+            kwargs.pop("cache_position", None)
             if self._supports_past_key_value[i]:
                 kwargs['past_key_value'] = pkv
             elif self._supports_layer_past[i]:
@@ -530,7 +537,7 @@ class StageLast(nn.Module):
             try:
                 out = layer(x, **kwargs)
             except TypeError as e:
-                if "position_embeddings" in kwargs:
+                if "position_embeddings" in kwargs or "cannot unpack non-iterable NoneType" in str(e):
                     kwargs.pop("position_embeddings", None)
                     kwargs.pop("cache_position", None)
                     out = layer(x, **kwargs)
