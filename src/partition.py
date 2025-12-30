@@ -179,12 +179,12 @@ class Stage0(nn.Module):
             kwargs = dict(attention_mask=attention_mask, use_cache=use_cache)
             if self._supports_pos_ids[i]:
                 kwargs['position_ids'] = position_ids
-            if self._supports_position_embeddings[i] and hasattr(layer, "self_attn") and hasattr(layer.self_attn, "rotary_emb"):
-                # Llama/Qwen RoPE: 사전에 cos/sin 계산
+            # RoPE: 항상 cos/sin을 미리 계산하여 전달 (Llama/Qwen)
+            if hasattr(layer, "self_attn") and hasattr(layer.self_attn, "rotary_emb") and position_ids is not None:
                 cos, sin = layer.self_attn.rotary_emb(x, position_ids)
                 kwargs['position_embeddings'] = (cos, sin)
-            if self._supports_cache_position[i] and position_ids is not None:
-                kwargs['cache_position'] = position_ids.view(-1)
+                if self._supports_cache_position[i]:
+                    kwargs['cache_position'] = position_ids.view(-1)
             if self._supports_past_key_value[i]:
                 kwargs['past_key_value'] = pkv
             elif self._supports_layer_past[i]:
@@ -197,7 +197,16 @@ class Stage0(nn.Module):
             # GPT-2의 경우, use_cache=True일 때 (hidden_states, present)를 반환해야 함
             # 하지만 일부 버전에서는 (hidden_states,)만 반환할 수 있음
             # 이 경우 attention 모듈을 직접 호출하여 present를 얻어야 함
-            out = layer(x, **kwargs)
+            try:
+                out = layer(x, **kwargs)
+            except TypeError as e:
+                # 일부 모델이 position_embeddings/cache_position을 지원하지 않는 경우 제거 후 재시도
+                if "position_embeddings" in str(e):
+                    kwargs.pop("position_embeddings", None)
+                    kwargs.pop("cache_position", None)
+                    out = layer(x, **kwargs)
+                else:
+                    raise
             
             # GPT-2 특별 처리: 출력이 len=1이고 use_cache=True인 경우
             # GPT-2Block이 use_cache=True일 때도 present를 반환하지 않는 경우
@@ -460,16 +469,24 @@ class StageSegment(nn.Module):
             kwargs = dict(attention_mask=attention_mask, use_cache=use_cache)
             if self._supports_pos_ids[i]:
                 kwargs['position_ids'] = position_ids
-            if self._supports_position_embeddings[i] and hasattr(layer, "self_attn") and hasattr(layer.self_attn, "rotary_emb"):
+            if hasattr(layer, "self_attn") and hasattr(layer.self_attn, "rotary_emb") and position_ids is not None:
                 cos, sin = layer.self_attn.rotary_emb(x, position_ids)
                 kwargs['position_embeddings'] = (cos, sin)
-            if self._supports_cache_position[i] and position_ids is not None:
-                kwargs['cache_position'] = position_ids.view(-1)
+                if self._supports_cache_position[i]:
+                    kwargs['cache_position'] = position_ids.view(-1)
             if self._supports_past_key_value[i]:
                 kwargs['past_key_value'] = pkv
             elif self._supports_layer_past[i]:
                 kwargs['layer_past'] = pkv
-            out = layer(x, **kwargs)
+            try:
+                out = layer(x, **kwargs)
+            except TypeError as e:
+                if "position_embeddings" in str(e):
+                    kwargs.pop("position_embeddings", None)
+                    kwargs.pop("cache_position", None)
+                    out = layer(x, **kwargs)
+                else:
+                    raise
             x = out[0]
             if use_cache:
                 new_past.append(_get_past_from_output(out))
@@ -517,16 +534,24 @@ class StageLast(nn.Module):
             kwargs = dict(attention_mask=attention_mask, use_cache=use_cache)
             if self._supports_pos_ids[i]:
                 kwargs['position_ids'] = position_ids
-            if self._supports_position_embeddings[i] and hasattr(layer, "self_attn") and hasattr(layer.self_attn, "rotary_emb"):
+            if hasattr(layer, "self_attn") and hasattr(layer.self_attn, "rotary_emb") and position_ids is not None:
                 cos, sin = layer.self_attn.rotary_emb(x, position_ids)
                 kwargs['position_embeddings'] = (cos, sin)
-            if self._supports_cache_position[i] and position_ids is not None:
-                kwargs['cache_position'] = position_ids.view(-1)
+                if self._supports_cache_position[i]:
+                    kwargs['cache_position'] = position_ids.view(-1)
             if self._supports_past_key_value[i]:
                 kwargs['past_key_value'] = pkv
             elif self._supports_layer_past[i]:
                 kwargs['layer_past'] = pkv
-            out = layer(x, **kwargs)
+            try:
+                out = layer(x, **kwargs)
+            except TypeError as e:
+                if "position_embeddings" in str(e):
+                    kwargs.pop("position_embeddings", None)
+                    kwargs.pop("cache_position", None)
+                    out = layer(x, **kwargs)
+                else:
+                    raise
             x = out[0]
             if use_cache:
                 new_past.append(_get_past_from_output(out))
