@@ -56,6 +56,20 @@ def _get_past_from_output(out):
     return None
 
 
+class LLaMALayerWrapper(nn.Module):
+    """Wrapper for LLaMA decoder layers to filter out position_embeddings and cache_position."""
+    def __init__(self, layer):
+        super().__init__()
+        self.layer = layer
+    
+    def forward(self, x, **kwargs):
+        # position_embeddings와 cache_position을 kwargs에서 제거
+        # LLaMA는 position_ids만 받아서 내부적으로 RoPE를 계산함
+        filtered_kwargs = {k: v for k, v in kwargs.items() 
+                          if k not in ('position_embeddings', 'cache_position')}
+        return self.layer(x, **filtered_kwargs)
+
+
 class GPT2BlockWrapper(nn.Module):
     """Wrapper for GPT2Block to ensure present is always returned when use_cache=True."""
     def __init__(self, block):
@@ -139,11 +153,23 @@ class Stage0(nn.Module):
         else:
             raise ValueError(f"Unsupported model architecture: {type(full)}.")
         self.config = full.config
-        # GPT-2Block인 경우 래퍼 적용
+        # GPT-2Block과 LLaMA 레이어에 래퍼 적용
         self.layers = nn.ModuleList()
+        model_type = getattr(full.config, "model_type", "").lower()
+        is_llama_model = 'llama' in model_type or 'mistral' in model_type or 'mixtral' in model_type
+        
         for layer in raw_layers:
-            if type(layer).__name__ == 'GPT2Block':
+            layer_type_name = type(layer).__name__
+            if layer_type_name == 'GPT2Block':
                 self.layers.append(GPT2BlockWrapper(layer))
+            elif is_llama_model or 'Llama' in layer_type_name:
+                # LLaMA 계열 레이어: position_embeddings와 cache_position 필터링
+                # forward 시그니처에 position_embeddings가 있는지 확인
+                sig_params = inspect.signature(layer.forward).parameters
+                if 'position_embeddings' in sig_params:
+                    self.layers.append(LLaMALayerWrapper(layer))
+                else:
+                    self.layers.append(layer)
             else:
                 self.layers.append(layer)
         
@@ -435,9 +461,21 @@ class StageSegment(nn.Module):
             raise ValueError(f"Unsupported model architecture: {type(full)}.")
         self.config = full.config
         self.layers = nn.ModuleList()
+        model_type = getattr(full.config, "model_type", "").lower()
+        is_llama_model = 'llama' in model_type or 'mistral' in model_type or 'mixtral' in model_type
+        
         for layer in raw_layers:
-            if type(layer).__name__ == "GPT2Block":
+            layer_type_name = type(layer).__name__
+            if layer_type_name == "GPT2Block":
                 self.layers.append(GPT2BlockWrapper(layer))
+            elif is_llama_model or 'Llama' in layer_type_name:
+                # LLaMA 계열 레이어: position_embeddings와 cache_position 필터링
+                # forward 시그니처에 position_embeddings가 있는지 확인
+                sig_params = inspect.signature(layer.forward).parameters
+                if 'position_embeddings' in sig_params:
+                    self.layers.append(LLaMALayerWrapper(layer))
+                else:
+                    self.layers.append(layer)
             else:
                 self.layers.append(layer)
 
@@ -487,9 +525,21 @@ class StageLast(nn.Module):
             raise ValueError(f"Unsupported model architecture: {type(full)}.")
 
         self.layers = nn.ModuleList()
+        model_type = getattr(full.config, "model_type", "").lower()
+        is_llama_model = 'llama' in model_type or 'mistral' in model_type or 'mixtral' in model_type
+        
         for layer in raw_layers:
-            if type(layer).__name__ == "GPT2Block":
+            layer_type_name = type(layer).__name__
+            if layer_type_name == "GPT2Block":
                 self.layers.append(GPT2BlockWrapper(layer))
+            elif is_llama_model or 'Llama' in layer_type_name:
+                # LLaMA 계열 레이어: position_embeddings와 cache_position 필터링
+                # forward 시그니처에 position_embeddings가 있는지 확인
+                sig_params = inspect.signature(layer.forward).parameters
+                if 'position_embeddings' in sig_params:
+                    self.layers.append(LLaMALayerWrapper(layer))
+                else:
+                    self.layers.append(layer)
             else:
                 self.layers.append(layer)
 
