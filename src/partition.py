@@ -179,8 +179,12 @@ class Stage0(nn.Module):
             kwargs = dict(attention_mask=attention_mask, use_cache=use_cache)
             if self._supports_pos_ids[i]:
                 kwargs['position_ids'] = position_ids
-            # 강제로 외부 position_embeddings/cache_position 전달을 차단 (LLaMA 내부 계산 사용)
-            kwargs.pop("position_embeddings", None)
+            # LLaMA: 내부에서 position_embeddings를 계산하도록 명시적으로 None 설정
+            if "position_embeddings" in kwargs:
+                kwargs["position_embeddings"] = None
+            else:
+                # 넣어두어도 None이면 내부 계산 경로를 사용
+                kwargs["position_embeddings"] = None
             kwargs.pop("cache_position", None)
             if self._supports_past_key_value[i]:
                 kwargs['past_key_value'] = pkv
@@ -466,7 +470,7 @@ class StageSegment(nn.Module):
             kwargs = dict(attention_mask=attention_mask, use_cache=use_cache)
             if self._supports_pos_ids[i]:
                 kwargs['position_ids'] = position_ids
-            kwargs.pop("position_embeddings", None)
+            kwargs["position_embeddings"] = None
             kwargs.pop("cache_position", None)
             if self._supports_past_key_value[i]:
                 kwargs['past_key_value'] = pkv
@@ -528,7 +532,7 @@ class StageLast(nn.Module):
             kwargs = dict(attention_mask=attention_mask, use_cache=use_cache)
             if self._supports_pos_ids[i]:
                 kwargs['position_ids'] = position_ids
-            kwargs.pop("position_embeddings", None)
+            kwargs["position_embeddings"] = None
             kwargs.pop("cache_position", None)
             if self._supports_past_key_value[i]:
                 kwargs['past_key_value'] = pkv
