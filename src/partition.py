@@ -758,13 +758,9 @@ def load_stage_model(
         # but removing them breaks some model implementations (e.g., GPT-2 expecting wpe).
         if hasattr(full, "lm_head"):
             full.lm_head = None
-        if hasattr(full, "model") and hasattr(full.model, "norm"):
-            full.model.norm = None
     elif role == "last":
         _prune_layers(full, start, None)
-        # Keep embeddings to avoid None access in some model forwards; unused by stage but harmless.
-        if hasattr(full, "model") and hasattr(full.model, "norm"):
-            full.model.norm = None
+        # Keep norm/head for final stage
     else:
         raise ValueError(f"Unknown role: {role}")
 
