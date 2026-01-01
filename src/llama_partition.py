@@ -331,7 +331,23 @@ def _convert_layers(raw_layers: nn.ModuleList, config, device=None, dtype=None, 
                 if unexpected:
                     logger.warning(f"Layer {idx}: unexpected keys after strict=False: {list(unexpected)[:10]}")
             
-            # 4-1. Buffer 명시적 복사 확인 (특히 rotary_emb)
+            # 4. 디바이스 이동 (원본 레이어와 동일한 device로)
+            if device is not None:
+                opt_layer = opt_layer.to(device)
+            elif hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'q_proj'):
+                # 원본 레이어의 device 확인
+                original_device = layer.self_attn.q_proj.weight.device
+                opt_layer = opt_layer.to(original_device)
+            
+            # 5. dtype 변환 (원본 레이어와 동일한 dtype으로)
+            if dtype is not None:
+                opt_layer = opt_layer.to(dtype)
+            elif hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'q_proj'):
+                # 원본 레이어의 dtype 확인
+                original_dtype = layer.self_attn.q_proj.weight.dtype
+                opt_layer = opt_layer.to(original_dtype)
+            
+            # 5-1. Buffer 명시적 복사 확인 (특히 rotary_emb) - device 이동 후에 실행
             if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'rotary_emb'):
                 if hasattr(opt_layer, 'self_attn') and hasattr(opt_layer.self_attn, 'rotary_emb'):
                     orig_rotary = layer.self_attn.rotary_emb
@@ -350,28 +366,20 @@ def _convert_layers(raw_layers: nn.ModuleList, config, device=None, dtype=None, 
                             orig_buffer_cpu = orig_buffer.cpu()
                             opt_buffer_cpu = opt_buffer.cpu()
                             if not torch.equal(orig_buffer_cpu, opt_buffer_cpu):
+                                # 원본 buffer를 opt_buffer의 device로 이동하여 복사
                                 opt_buffer.data.copy_(orig_buffer.data.to(opt_buffer.device))
-                                logger.info(f"Layer {idx}: Copied rotary_emb buffer: {buffer_name}")
+                                logger.info(f"Layer {idx}: Copied rotary_emb buffer: {buffer_name} (device: {opt_buffer.device})")
+                                
+                                # 복사 후 다시 확인
+                                opt_buffer_cpu_after = opt_buffer.cpu()
+                                if torch.equal(orig_buffer_cpu, opt_buffer_cpu_after):
+                                    logger.info(f"Layer {idx}: ✓ Rotary buffer {buffer_name} verified after copy")
+                                else:
+                                    logger.error(f"Layer {idx}: ✗ Rotary buffer {buffer_name} still mismatched after copy!")
                             else:
                                 logger.debug(f"Layer {idx}: Rotary buffer {buffer_name} already matches")
                         else:
                             logger.warning(f"Layer {idx}: Rotary buffer {buffer_name} not found in optimized layer")
-            
-            # 4. 디바이스 이동 (원본 레이어와 동일한 device로)
-            if device is not None:
-                opt_layer = opt_layer.to(device)
-            elif hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'q_proj'):
-                # 원본 레이어의 device 확인
-                original_device = layer.self_attn.q_proj.weight.device
-                opt_layer = opt_layer.to(original_device)
-            
-            # 5. dtype 변환 (원본 레이어와 동일한 dtype으로)
-            if dtype is not None:
-                opt_layer = opt_layer.to(dtype)
-            elif hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'q_proj'):
-                # 원본 레이어의 dtype 확인
-                original_dtype = layer.self_attn.q_proj.weight.dtype
-                opt_layer = opt_layer.to(original_dtype)
             
             # 6. 가중치 검증 (모든 가중치 비교)
             opt_state_dict = opt_layer.state_dict()
