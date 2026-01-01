@@ -13,7 +13,9 @@ logger = logging.getLogger(__name__)
 
 try:
     from petals.llama.block import OptimizedLlamaDecoderLayer
-    OPTIMIZED_LAYER_AVAILABLE = True
+    # 임시로 OptimizedLlamaDecoderLayer 사용 비활성화 (hidden states 폭발 문제 해결을 위해)
+    OPTIMIZED_LAYER_AVAILABLE = False
+    logger.warning("OptimizedLlamaDecoderLayer is available but disabled due to hidden states explosion issue. Using default LlamaDecoderLayer.")
 except ImportError as e:
     OPTIMIZED_LAYER_AVAILABLE = False
     logger.warning(f"OptimizedLlamaDecoderLayer not available ({e}), using default LlamaDecoderLayer")
