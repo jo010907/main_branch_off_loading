@@ -130,24 +130,72 @@ def _convert_layers(raw_layers: nn.ModuleList, config, device=None, dtype=None, 
         elif isinstance(layer, LlamaDecoderLayer):
             # 1. 원본 레이어에서 state_dict 추출
             original_state_dict = layer.state_dict()
+            logger.debug(f"Layer {idx}: Original state_dict keys: {list(original_state_dict.keys())[:10]}")
             
             # 2. OptimizedLlamaDecoderLayer 생성
             opt_layer = OptimizedLlamaDecoderLayer(config)
+            opt_state_dict_before = opt_layer.state_dict()
+            logger.debug(f"Layer {idx}: Optimized state_dict keys (before): {list(opt_state_dict_before.keys())[:10]}")
             
-            # 3. 가중치 로드 (strict=True로 시도, 실패하면 strict=False)
+            # 3. 가중치 로드 전 검증: 키 이름 비교
+            orig_keys = set(original_state_dict.keys())
+            opt_keys_before = set(opt_state_dict_before.keys())
+            missing_before = orig_keys - opt_keys_before
+            unexpected_before = opt_keys_before - orig_keys
+            
+            if missing_before:
+                logger.error(f"Layer {idx}: Keys in original but not in optimized (before load): {list(missing_before)[:10]}")
+            if unexpected_before:
+                logger.warning(f"Layer {idx}: Keys in optimized but not in original (before load): {list(unexpected_before)[:10]}")
+            
+            # 4. 가중치 로드 (strict=True로 시도, 실패하면 strict=False)
+            # 만약 strict=False로도 실패하면, 서브모듈별로 직접 복사 시도
             try:
                 missing, unexpected = opt_layer.load_state_dict(original_state_dict, strict=True)
                 if missing:
-                    logger.warning(f"Layer {idx}: missing keys: {list(missing)[:5]}")
+                    logger.error(f"Layer {idx}: missing keys after strict=True: {list(missing)}")
                 if unexpected:
-                    logger.warning(f"Layer {idx}: unexpected keys: {list(unexpected)[:5]}")
+                    logger.warning(f"Layer {idx}: unexpected keys after strict=True: {list(unexpected)[:10]}")
+                if not missing and not unexpected:
+                    logger.info(f"Layer {idx}: ✓ All weights loaded successfully with strict=True")
             except RuntimeError as e:
-                logger.warning(f"Layer {idx}: strict=True failed, trying strict=False: {e}")
+                logger.warning(f"Layer {idx}: strict=True failed: {e}")
                 missing, unexpected = opt_layer.load_state_dict(original_state_dict, strict=False)
-                if missing or unexpected:
-                    logger.warning(
-                        f"Layer {idx}: optimized load had missing={len(missing)}, unexpected={len(unexpected)}"
-                    )
+                if missing:
+                    logger.error(f"Layer {idx}: missing keys after strict=False: {list(missing)}")
+                    # 서브모듈별로 직접 복사 시도
+                    logger.info(f"Layer {idx}: Attempting to copy weights module by module...")
+                    try:
+                        # self_attn 복사
+                        if hasattr(layer, 'self_attn') and hasattr(opt_layer, 'self_attn'):
+                            opt_layer.self_attn.load_state_dict(layer.self_attn.state_dict(), strict=False)
+                            logger.info(f"Layer {idx}: Copied self_attn weights")
+                        
+                        # mlp 복사
+                        if hasattr(layer, 'mlp') and hasattr(opt_layer, 'mlp'):
+                            opt_layer.mlp.load_state_dict(layer.mlp.state_dict(), strict=False)
+                            logger.info(f"Layer {idx}: Copied mlp weights")
+                        
+                        # layernorm 복사
+                        if hasattr(layer, 'input_layernorm') and hasattr(opt_layer, 'input_layernorm'):
+                            opt_layer.input_layernorm.load_state_dict(layer.input_layernorm.state_dict(), strict=False)
+                            logger.info(f"Layer {idx}: Copied input_layernorm weights")
+                        
+                        if hasattr(layer, 'post_attention_layernorm') and hasattr(opt_layer, 'post_attention_layernorm'):
+                            opt_layer.post_attention_layernorm.load_state_dict(layer.post_attention_layernorm.state_dict(), strict=False)
+                            logger.info(f"Layer {idx}: Copied post_attention_layernorm weights")
+                        
+                        # 다시 확인
+                        missing_after_module_copy = set(original_state_dict.keys()) - set(opt_layer.state_dict().keys())
+                        if missing_after_module_copy:
+                            logger.error(f"Layer {idx}: Still missing keys after module copy: {list(missing_after_module_copy)[:10]}")
+                        else:
+                            logger.info(f"Layer {idx}: ✓ All weights copied successfully via module-by-module approach")
+                    except Exception as module_copy_error:
+                        logger.error(f"Layer {idx}: Module-by-module copy failed: {module_copy_error}")
+                
+                if unexpected:
+                    logger.warning(f"Layer {idx}: unexpected keys after strict=False: {list(unexpected)[:10]}")
             
             # 4. 디바이스 이동 (원본 레이어와 동일한 device로)
             if device is not None:
@@ -165,23 +213,56 @@ def _convert_layers(raw_layers: nn.ModuleList, config, device=None, dtype=None, 
                 original_dtype = layer.self_attn.q_proj.weight.dtype
                 opt_layer = opt_layer.to(original_dtype)
             
-            # 6. 가중치 검증 (선택적)
+            # 6. 가중치 검증 (모든 가중치 비교)
             opt_state_dict = opt_layer.state_dict()
             key_checks = [
                 'self_attn.q_proj.weight', 'self_attn.k_proj.weight', 'self_attn.v_proj.weight',
-                'self_attn.o_proj.weight', 'mlp.gate_proj.weight', 'mlp.up_proj.weight', 'mlp.down_proj.weight'
+                'self_attn.o_proj.weight', 'mlp.gate_proj.weight', 'mlp.up_proj.weight', 'mlp.down_proj.weight',
+                'input_layernorm.weight', 'post_attention_layernorm.weight'
             ]
+            
+            weight_mismatches = []
+            missing_weights = []
+            
             for key in key_checks:
                 if key in original_state_dict and key in opt_state_dict:
                     orig_tensor = original_state_dict[key]
                     opt_tensor = opt_state_dict[key]
+                    
+                    # Shape 확인
+                    if orig_tensor.shape != opt_tensor.shape:
+                        logger.error(f"Layer {idx}: Shape mismatch for {key}: {orig_tensor.shape} vs {opt_tensor.shape}")
+                        missing_weights.append(key)
+                        continue
+                    
                     # CPU, float32로 변환하여 비교
                     orig_tensor = orig_tensor.cpu().float()
                     opt_tensor = opt_tensor.cpu().float()
+                    
+                    max_diff = (orig_tensor - opt_tensor).abs().max().item()
+                    mean_diff = (orig_tensor - opt_tensor).abs().mean().item()
+                    
                     if not torch.allclose(orig_tensor, opt_tensor, atol=1e-4):
-                        logger.error(f"Layer {idx}: Weight mismatch for {key}!")
+                        logger.error(
+                            f"Layer {idx}: Weight mismatch for {key}! max_diff={max_diff:.8f}, mean_diff={mean_diff:.8f}, "
+                            f"shape={orig_tensor.shape}"
+                        )
+                        weight_mismatches.append((key, max_diff, mean_diff))
+                    else:
+                        logger.debug(f"Layer {idx}: Weight OK for {key}: max_diff={max_diff:.8f}")
                 elif key in original_state_dict:
                     logger.error(f"Layer {idx}: Missing key {key} in optimized layer!")
+                    missing_weights.append(key)
+                elif key in opt_state_dict:
+                    logger.warning(f"Layer {idx}: Key {key} exists in optimized but not in original")
+            
+            if weight_mismatches:
+                logger.error(f"Layer {idx}: Found {len(weight_mismatches)} weight mismatches!")
+                for key, max_diff, mean_diff in weight_mismatches[:5]:  # 처음 5개만 출력
+                    logger.error(f"Layer {idx}:   - {key}: max_diff={max_diff:.8f}, mean_diff={mean_diff:.8f}")
+            
+            if missing_weights:
+                logger.error(f"Layer {idx}: Found {len(missing_weights)} missing weights: {missing_weights}")
             
             # 7. Forward pass 검증 (선택적)
             # 주의: OptimizedLlamaDecoderLayer는 구현이 약간 다를 수 있어서 
