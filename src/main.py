@@ -103,6 +103,7 @@ def run_rank0(args, device, splits):
     attn, pos = None, torch.arange(L, device=device, dtype=torch.long).unsqueeze(0)
 
     past0 = None # 첫 호출이므로 KV Cache 없음
+    prompt_ids = input_ids.clone()
 
     # 2. Prefill: 입력 시퀀스 전체를 처리하고 첫 번째 토큰 생성
     t_prefill_start = time.perf_counter()
@@ -133,29 +134,27 @@ def run_rank0(args, device, splits):
     decode_total_times = []
     
     for _ in range(args.max_new_tokens - 1): # Prefill에서 1개 토큰 생성했으므로 max - 1 생성
-        new_input = torch.tensor([[next_id]], device=device, dtype=torch.long)
-        # past cache 길이에 맞춰 attention mask/position_ids 생성
-        if past0 and past0[0] is not None:
+        # Stage0 cache가 비어 있으면 전체 히스토리를 재계산하여 캐시를 복원한다.
+        need_full_recompute = (not past0) or (len(past0) == 0) or (past0[0] is None)
+
+        if need_full_recompute:
+            logger.warning("Stage0 cache missing; recomputing from full history.")
+            full_input = torch.cat([prompt_ids, torch.tensor([generated], device=device, dtype=torch.long)], dim=1)
+            full_pos = torch.arange(full_input.shape[1], device=device, dtype=torch.long).unsqueeze(0)
+            attn = None
+            hidden_full, past0 = s0(full_input, full_pos, attn, None, use_cache=True)
+            hidden = hidden_full[:, -1:, :]  # 마지막 토큰 hidden만 사용
+            past_len = full_input.shape[1] - 1
+            logger.info(f"Stage0 recompute: total_len={full_input.shape[1]}, past_len={past_len}, hidden_shape={hidden.shape}")
+        else:
+            new_input = torch.tensor([[next_id]], device=device, dtype=torch.long)
             past_len = past0[0][0].shape[-2]
-        else:
-            past_len = cur_len - 1
-            logger.warning(f"Stage0: past0 is None or empty, using cur_len-1={past_len}")
-        
-        attn = None
-        pos = torch.tensor([[past_len]], device=device, dtype=torch.long)
-        logger.info(f"Stage0 decode step {cur_len-L}: past_len={past_len}, pos_ids={pos.tolist()}, input_token={next_id}")
-        hidden, past0 = s0(new_input, pos, attn, past0, use_cache=True)  # [1,1,H]
-        
-        # past0 검증 및 로깅
-        if past0 is None:
-            logger.error(f"Stage0: past0 is None after forward pass! This should not happen.")
-            raise RuntimeError("Stage0 forward returned None for past_key_values")
-        elif past0[0] is None:
-            logger.error(f"Stage0: past0[0] is None! KV cache not properly returned.")
-            raise RuntimeError("Stage0 KV cache is None")
-        else:
-            new_past_len = past0[0][0].shape[-2] if past0[0][0] is not None else 'N/A'
-            logger.info(f"Stage0: hidden shape={hidden.shape}, new_past_len={new_past_len}, past0 type={type(past0)}, past0 len={len(past0) if past0 else 'N/A'}")
+            attn = None
+            pos = torch.tensor([[past_len]], device=device, dtype=torch.long)
+            logger.info(f"Stage0 decode step {cur_len-L}: past_len={past_len}, pos_ids={pos.tolist()}, input_token={next_id}")
+            hidden, past0 = s0(new_input, pos, attn, past0, use_cache=True)  # [1,1,H]
+            new_past_len = past0[0][0].shape[-2] if past0 and past0[0] is not None else 'N/A'
+            logger.info(f"Stage0: hidden shape={hidden.shape}, new_past_len={new_past_len}, past0 len={len(past0) if past0 else 'N/A'}")
 
         # send_prefill과 동일 (generated_tokens 전달)
         tx.send_decode_step(cur_len, hidden, session_id=session_id, max_length=max_length, generated_tokens=generated)  # [1,1,H]
