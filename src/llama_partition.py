@@ -54,8 +54,12 @@ class Stage0(nn.Module):
                     # 디버깅: 가중치 복사 확인
                     if missing_keys or unexpected_keys:
                         logger.warning(f"Stage0 layer {i}: missing_keys={len(missing_keys)}, unexpected_keys={len(unexpected_keys)}")
+                        if missing_keys:
+                            logger.warning(f"Stage0 layer {i} missing_keys: {list(missing_keys)[:5]}")  # 처음 5개만 출력
+                        if unexpected_keys:
+                            logger.warning(f"Stage0 layer {i} unexpected_keys: {list(unexpected_keys)[:5]}")
                     else:
-                        logger.debug(f"Stage0 layer {i}: Successfully converted to OptimizedLlamaDecoderLayer")
+                        logger.info(f"Stage0 layer {i}: Successfully converted to OptimizedLlamaDecoderLayer")
                 else:
                     optimized_layers.append(layer)
             self.layers = nn.ModuleList(optimized_layers)
@@ -139,8 +143,12 @@ class StageSegment(nn.Module):
                     # 디버깅: 가중치 복사 확인
                     if missing_keys or unexpected_keys:
                         logger.warning(f"StageSegment layer {i}: missing_keys={len(missing_keys)}, unexpected_keys={len(unexpected_keys)}")
+                        if missing_keys:
+                            logger.warning(f"StageSegment layer {i} missing_keys: {list(missing_keys)[:5]}")  # 처음 5개만 출력
+                        if unexpected_keys:
+                            logger.warning(f"StageSegment layer {i} unexpected_keys: {list(unexpected_keys)[:5]}")
                     else:
-                        logger.debug(f"StageSegment layer {i}: Successfully converted to OptimizedLlamaDecoderLayer")
+                        logger.info(f"StageSegment layer {i}: Successfully converted to OptimizedLlamaDecoderLayer")
                 else:
                     optimized_layers.append(layer)
             self.layers = nn.ModuleList(optimized_layers)
@@ -225,8 +233,12 @@ class StageLast(nn.Module):
                     # 디버깅: 가중치 복사 확인
                     if missing_keys or unexpected_keys:
                         logger.warning(f"StageLast layer {i}: missing_keys={len(missing_keys)}, unexpected_keys={len(unexpected_keys)}")
+                        if missing_keys:
+                            logger.warning(f"StageLast layer {i} missing_keys: {list(missing_keys)[:5]}")  # 처음 5개만 출력
+                        if unexpected_keys:
+                            logger.warning(f"StageLast layer {i} unexpected_keys: {list(unexpected_keys)[:5]}")
                     else:
-                        logger.debug(f"StageLast layer {i}: Successfully converted to OptimizedLlamaDecoderLayer")
+                        logger.info(f"StageLast layer {i}: Successfully converted to OptimizedLlamaDecoderLayer")
                 else:
                     optimized_layers.append(layer)
             self.layers = nn.ModuleList(optimized_layers)

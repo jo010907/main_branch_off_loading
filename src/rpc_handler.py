@@ -237,8 +237,9 @@ class StageConnectionHandler(ConnectionHandler):
             )
         else:
             hidden_out = outputs
-            # 디버깅: hidden states shape 확인 (INFO 레벨로 변경)
+            # 디버깅: hidden states shape 및 통계 확인
             logger.info(f"[{session_id[:8]}] Stage output: {hidden_out.shape}, input: {hidden_states.shape}")
+            logger.debug(f"[{session_id[:8]}] Hidden stats: min={hidden_out.min().item():.4f}, max={hidden_out.max().item():.4f}, mean={hidden_out.mean().item():.4f}, std={hidden_out.std().item():.4f}")
             serialized_hidden = serialize_torch_tensor(hidden_out.cpu())
             response_metadata = {"session_id": session_id}
             return runtime_pb2.ExpertResponse(
@@ -299,18 +300,29 @@ class StageConnectionHandler(ConnectionHandler):
             topk_probs, topk_idx = torch.topk(probs, top_k, dim=-1)
             mask = torch.zeros_like(probs).scatter(-1, topk_idx, topk_probs)
             probs = mask
+            # 디버깅: top_k 필터링 후 top5
+            top5_after_topk = probs.topk(5, dim=-1)
+            logger.debug(f"After top_k={top_k}: top5_indices={top5_after_topk.indices[0].tolist()}, top5_probs={top5_after_topk.values[0].tolist()}")
 
         if 0.0 < top_p < 1.0:
             sorted_probs, sorted_idx = torch.sort(probs, descending=True, dim=-1)
             cum = torch.cumsum(sorted_probs, dim=-1)
+            # 디버깅: top_p 필터링 전 통계
+            logger.debug(f"Before top_p={top_p}: sorted_probs[0][:5]={sorted_probs[0][:5].tolist()}, cumsum[0][:5]={cum[0][:5].tolist()}")
             keep = cum <= top_p
             keep[..., 0] = True
             filtered = sorted_probs * keep
             filtered = filtered / filtered.sum(dim=-1, keepdim=True)
             probs = torch.zeros_like(probs).scatter(-1, sorted_idx, filtered)
+            # 디버깅: top_p 필터링 후 top5
+            top5_after_topp = probs.topk(5, dim=-1)
+            logger.info(f"After top_p={top_p}: top5_indices={top5_after_topp.indices[0].tolist()}, top5_probs={[f'{v:.4f}' for v in top5_after_topp.values[0].tolist()]}, sampled_from={probs.nonzero().shape[0]} tokens")
 
         probs = probs / probs.sum(dim=-1, keepdim=True)
         token = torch.multinomial(probs, 1)
+        # 디버깅: 샘플링된 토큰의 확률
+        sampled_prob = probs[0, token.item()].item()
+        logger.info(f"Sampled token {token.item()} with probability {sampled_prob:.4f}")
         return int(token.item())
 
     async def rpc_forward(
