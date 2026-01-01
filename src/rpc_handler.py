@@ -245,9 +245,15 @@ class StageConnectionHandler(ConnectionHandler):
         """Apply temperature / nucleus / top-k sampling with repetition penalty."""
         # Greedy path to avoid div/0 and CUDA asserts when temperature==0
         if temperature <= 0.0:
+            last_logits = logits[:, -1, :] if logits.dim() == 3 else logits
+            topk_vals, topk_ids = last_logits.topk(5, dim=-1)
+            logger.info(f"Top5 (greedy) ids={topk_ids[0].tolist()}, vals={topk_vals[0].tolist()}")
             return int(torch.argmax(logits, dim=-1).item())
 
         temp = max(temperature, 1e-5)
+        last_logits = logits[:, -1, :] if logits.dim() == 3 else logits
+        topk_vals, topk_ids = last_logits.topk(5, dim=-1)
+        logger.info(f"Top5 ids={topk_ids[0].tolist()}, vals={topk_vals[0].tolist()}, temp={temperature}, top_p={top_p}, top_k={top_k}")
         
         # Repetition penalty 적용 - 더 강하게
         if repetition_penalty != 1.0 and generated_tokens:
