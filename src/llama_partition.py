@@ -613,14 +613,23 @@ class Stage0(nn.Module):
                 layer_past, x.shape[1], x.device
             )
             # 입력 상태 확인 (prefill일 때만)
-            if is_prefill and i == 0:
+            if is_prefill:
                 input_before = x.clone()
                 input_min, input_max = input_before.min().item(), input_before.max().item()
                 input_mean, input_std = input_before.mean().item(), input_before.std().item()
-                logger.info(
-                    f"Stage0: Prefill - Layer {i} INPUT (before layer): "
-                    f"min={input_min:.4f}, max={input_max:.4f}, mean={input_mean:.4f}, std={input_std:.4f}"
-                )
+                
+                # Layer 0과 Layer 1의 입력을 특별히 확인
+                if i == 0:
+                    logger.info(
+                        f"Stage0: Prefill - Layer {i} INPUT (before layer): "
+                        f"min={input_min:.4f}, max={input_max:.4f}, mean={input_mean:.4f}, std={input_std:.4f}"
+                    )
+                elif i == 1:
+                    logger.info(
+                        f"Stage0: Prefill - Layer {i} INPUT (before layer): "
+                        f"min={input_min:.4f}, max={input_max:.4f}, mean={input_mean:.4f}, std={input_std:.4f}, "
+                        f"position_ids={layer_pos.tolist() if layer_pos is not None else None}"
+                    )
             
             out = layer(
                 x,
