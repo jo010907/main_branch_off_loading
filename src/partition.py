@@ -591,6 +591,7 @@ class StageSegment(nn.Module):
         self.layers = nn.ModuleList()
         model_type = getattr(full.config, "model_type", "").lower()
         is_llama_model = 'llama' in model_type or 'mistral' in model_type or 'mixtral' in model_type
+        self.is_llama_model = is_llama_model
         
         for layer in raw_layers:
             layer_type_name = type(layer).__name__
@@ -615,6 +616,20 @@ class StageSegment(nn.Module):
         self._supports_cache_position = ['cache_position' in p for p in sig_params]
 
     def forward(self, hidden_states, position_ids, attention_mask, past_key_values=None, use_cache=True):
+        if self.is_llama_model:
+            cache = past_key_values if isinstance(past_key_values, Cache) else (DynamicCache() if use_cache else None)
+            x = hidden_states
+            for layer in self.layers:
+                out = layer(
+                    x,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_value=cache,
+                    use_cache=use_cache,
+                    output_attentions=False,
+                )
+                x = out[0]
+            return x, cache if use_cache else None
         x = hidden_states
         new_past = []
         for i, layer in enumerate(self.layers):
@@ -655,6 +670,7 @@ class StageLast(nn.Module):
         self.layers = nn.ModuleList()
         model_type = getattr(full.config, "model_type", "").lower()
         is_llama_model = 'llama' in model_type or 'mistral' in model_type or 'mixtral' in model_type
+        self.is_llama_model = is_llama_model
         
         for layer in raw_layers:
             layer_type_name = type(layer).__name__
@@ -681,6 +697,22 @@ class StageLast(nn.Module):
         self._supports_cache_position = ['cache_position' in p for p in sig_params]
 
     def forward(self, hidden_states, position_ids, attention_mask, past_key_values=None, use_cache=True):
+        if self.is_llama_model:
+            cache = past_key_values if isinstance(past_key_values, Cache) else (DynamicCache() if use_cache else None)
+            x = hidden_states
+            for layer in self.layers:
+                out = layer(
+                    x,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_value=cache,
+                    use_cache=use_cache,
+                    output_attentions=False,
+                )
+                x = out[0]
+            x = self.norm(x)
+            logits = self.lm_head(x)
+            return logits, cache if use_cache else None
         x = hidden_states
         new_past = []
         for i, layer in enumerate(self.layers):

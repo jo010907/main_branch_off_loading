@@ -84,6 +84,14 @@ class StageConnectionHandler(ConnectionHandler):
     @staticmethod
     def _past_len(past_key_values, cur_len: int, chunk_len: int) -> int:
         """Safely derive past sequence length for cache-aware masking."""
+        # HuggingFace Cache object (e.g., DynamicCache for LLaMA)
+        try:
+            from transformers.cache_utils import Cache  # type: ignore
+        except Exception:
+            Cache = None
+
+        if Cache is not None and isinstance(past_key_values, Cache):
+            return past_key_values.get_seq_length(0)
         if not past_key_values:
             return max(cur_len - chunk_len, 0)
         first = past_key_values[0] if len(past_key_values) > 0 else None
