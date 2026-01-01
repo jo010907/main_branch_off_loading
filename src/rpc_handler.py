@@ -243,6 +243,10 @@ class StageConnectionHandler(ConnectionHandler):
     def _sample_token(self, logits: torch.Tensor, temperature: float, top_p: float, top_k: int, 
                       repetition_penalty: float = 1.2, generated_tokens: Optional[List[int]] = None) -> int:
         """Apply temperature / nucleus / top-k sampling with repetition penalty."""
+        # Greedy path to avoid div/0 and CUDA asserts when temperature==0
+        if temperature <= 0.0:
+            return int(torch.argmax(logits, dim=-1).item())
+
         temp = max(temperature, 1e-5)
         
         # Repetition penalty 적용 - 더 강하게
