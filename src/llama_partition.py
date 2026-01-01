@@ -359,27 +359,67 @@ def _convert_layers(raw_layers: nn.ModuleList, config, device=None, dtype=None, 
                     
                     logger.debug(f"Layer {idx}: Rotary embedding buffers - original: {list(orig_rotary_buffers.keys())}, optimized: {list(opt_rotary_buffers.keys())}")
                     
-                    for buffer_name, orig_buffer in orig_rotary_buffers.items():
-                        if buffer_name in opt_rotary_buffers:
-                            opt_buffer = getattr(opt_rotary, buffer_name)
-                            # Device가 다를 수 있으므로 CPU로 이동하여 비교
-                            orig_buffer_cpu = orig_buffer.cpu()
-                            opt_buffer_cpu = opt_buffer.cpu()
-                            if not torch.equal(orig_buffer_cpu, opt_buffer_cpu):
-                                # 원본 buffer를 opt_buffer의 device로 이동하여 복사
-                                opt_buffer.data.copy_(orig_buffer.data.to(opt_buffer.device))
-                                logger.info(f"Layer {idx}: Copied rotary_emb buffer: {buffer_name} (device: {opt_buffer.device})")
+                    # 방법 1: state_dict를 통한 복사 (더 안전함)
+                    try:
+                        orig_rotary_sd = orig_rotary.state_dict()
+                        opt_rotary_sd = opt_rotary.state_dict()
+                        
+                        # 공통 키만 복사
+                        common_keys = set(orig_rotary_sd.keys()) & set(opt_rotary_sd.keys())
+                        if common_keys:
+                            # device를 맞춰서 복사
+                            for key in common_keys:
+                                orig_val = orig_rotary_sd[key]
+                                opt_val = opt_rotary_sd[key]
                                 
-                                # 복사 후 다시 확인
-                                opt_buffer_cpu_after = opt_buffer.cpu()
-                                if torch.equal(orig_buffer_cpu, opt_buffer_cpu_after):
-                                    logger.info(f"Layer {idx}: ✓ Rotary buffer {buffer_name} verified after copy")
-                                else:
-                                    logger.error(f"Layer {idx}: ✗ Rotary buffer {buffer_name} still mismatched after copy!")
+                                # CPU에서 비교
+                                orig_val_cpu = orig_val.cpu()
+                                opt_val_cpu = opt_val.cpu()
+                                if not torch.equal(orig_val_cpu, opt_val_cpu):
+                                    # opt_rotary의 device로 이동하여 복사
+                                    target_device = opt_val.device
+                                    # load_state_dict를 사용하여 복사 (더 안전함)
+                                    opt_rotary.load_state_dict({key: orig_val.to(target_device)}, strict=False)
+                                    logger.info(f"Layer {idx}: Copied rotary_emb.{key} via load_state_dict (device: {target_device})")
+                            
+                            # 복사 후 검증
+                            opt_rotary_sd_after = opt_rotary.state_dict()
+                            all_match = True
+                            for key in common_keys:
+                                orig_val = orig_rotary_sd[key].cpu()
+                                opt_val_after = opt_rotary_sd_after[key].cpu()
+                                if not torch.equal(orig_val, opt_val_after):
+                                    diff = (orig_val - opt_val_after).abs().max().item()
+                                    logger.error(f"Layer {idx}: ✗ rotary_emb.{key} still mismatched after copy! diff={diff:.8f}")
+                                    all_match = False
+                            
+                            if all_match:
+                                logger.info(f"Layer {idx}: ✓ All rotary_emb buffers verified after copy")
+                    except Exception as e:
+                        logger.warning(f"Layer {idx}: Failed to copy rotary_emb via state_dict: {e}, trying direct copy...")
+                        
+                        # 방법 2: 직접 복사 (fallback)
+                        for buffer_name, orig_buffer in orig_rotary_buffers.items():
+                            if buffer_name in opt_rotary_buffers:
+                                opt_buffer = getattr(opt_rotary, buffer_name)
+                                # Device가 다를 수 있으므로 CPU로 이동하여 비교
+                                orig_buffer_cpu = orig_buffer.cpu()
+                                opt_buffer_cpu = opt_buffer.cpu()
+                                if not torch.equal(orig_buffer_cpu, opt_buffer_cpu):
+                                    # 원본 buffer를 opt_buffer의 device로 이동하여 복사
+                                    with torch.no_grad():
+                                        opt_buffer.data.copy_(orig_buffer.data.to(opt_buffer.device))
+                                    logger.info(f"Layer {idx}: Copied rotary_emb buffer: {buffer_name} (device: {opt_buffer.device})")
+                                    
+                                    # 복사 후 다시 확인
+                                    opt_buffer_cpu_after = opt_buffer.cpu()
+                                    if torch.equal(orig_buffer_cpu, opt_buffer_cpu_after):
+                                        logger.info(f"Layer {idx}: ✓ Rotary buffer {buffer_name} verified after copy")
+                                    else:
+                                        diff = (orig_buffer_cpu - opt_buffer_cpu_after).abs().max().item()
+                                        logger.error(f"Layer {idx}: ✗ Rotary buffer {buffer_name} still mismatched after copy! diff={diff:.8f}")
                             else:
-                                logger.debug(f"Layer {idx}: Rotary buffer {buffer_name} already matches")
-                        else:
-                            logger.warning(f"Layer {idx}: Rotary buffer {buffer_name} not found in optimized layer")
+                                logger.warning(f"Layer {idx}: Rotary buffer {buffer_name} not found in optimized layer")
             
             # 6. 가중치 검증 (모든 가중치 비교)
             opt_state_dict = opt_layer.state_dict()
