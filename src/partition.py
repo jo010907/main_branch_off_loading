@@ -57,7 +57,13 @@ def _get_past_from_output(out):
 
 
 class LLaMALayerWrapper(nn.Module):
-    """Wrapper for LLaMA decoder layers to filter out position_embeddings and cache_position."""
+    """Wrapper for LLaMA decoder layers to filter out position_embeddings and cache_position.
+    
+    Based on block.py's OptimizedLlamaAttention approach:
+    - Never uses position_embeddings parameter (filters it out)
+    - Only uses position_ids, auto-computes if None
+    - Uses rotary_emb internally to compute RoPE
+    """
     def __init__(self, layer):
         super().__init__()
         self.layer = layer
@@ -67,6 +73,24 @@ class LLaMALayerWrapper(nn.Module):
         # LLaMA는 position_ids만 받아서 내부적으로 RoPE를 계산함
         filtered_kwargs = {k: v for k, v in kwargs.items() 
                           if k not in ('position_embeddings', 'cache_position')}
+        
+        # position_ids가 None인 경우 자동 계산 (block.py 방식 차용)
+        position_ids = filtered_kwargs.get('position_ids')
+        if position_ids is None:
+            # past_key_value 또는 past_key_values에서 past_seen_tokens 계산
+            past_key_value = filtered_kwargs.get('past_key_value')
+            if past_key_value is not None and isinstance(past_key_value, (tuple, list)) and len(past_key_value) > 0:
+                # past_key_value는 (key, value) 튜플
+                past_seen_tokens = past_key_value[0].shape[2] if past_key_value[0] is not None else 0
+            else:
+                past_seen_tokens = 0
+            
+            # block.py와 동일한 방식으로 position_ids 생성
+            position_ids = torch.arange(
+                past_seen_tokens, past_seen_tokens + x.shape[1], device=x.device
+            ).unsqueeze(0)
+            filtered_kwargs['position_ids'] = position_ids
+        
         return self.layer(x, **filtered_kwargs)
 
 
