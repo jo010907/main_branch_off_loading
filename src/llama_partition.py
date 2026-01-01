@@ -1,3 +1,4 @@
+import logging
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM
@@ -7,6 +8,15 @@ try:
 except Exception:
     Cache = None
 from typing import Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+try:
+    from petals.llama.block import OptimizedLlamaDecoderLayer
+    OPTIMIZED_LAYER_AVAILABLE = True
+except ImportError:
+    OPTIMIZED_LAYER_AVAILABLE = False
+    logger.warning("OptimizedLlamaDecoderLayer not available, using default LlamaDecoderLayer")
 
 from .utils import extract_kv_tuple, default_position_ids
 
@@ -30,7 +40,22 @@ class Stage0(nn.Module):
         else:
             raise ValueError(f"Unsupported LLaMA architecture: {type(full)}.")
 
-        self.layers = nn.ModuleList(raw_layers)
+        # Convert to OptimizedLlamaDecoderLayer if available
+        if OPTIMIZED_LAYER_AVAILABLE:
+            optimized_layers = []
+            for layer in raw_layers:
+                if isinstance(layer, OptimizedLlamaDecoderLayer):
+                    optimized_layers.append(layer)
+                elif isinstance(layer, LlamaDecoderLayer):
+                    # Create OptimizedLlamaDecoderLayer and copy weights
+                    opt_layer = OptimizedLlamaDecoderLayer(full.config)
+                    opt_layer.load_state_dict(layer.state_dict(), strict=False)
+                    optimized_layers.append(opt_layer)
+                else:
+                    optimized_layers.append(layer)
+            self.layers = nn.ModuleList(optimized_layers)
+        else:
+            self.layers = nn.ModuleList(raw_layers)
         self.config = full.config
 
     def forward(
@@ -65,6 +90,12 @@ class Stage0(nn.Module):
                 else:
                     kv = extract_kv_tuple(out, layer_idx=i)
                 new_cache.append(kv)
+                if kv is None:
+                    logger.warning(f"StageLast: layer {i} returned no KV (kv_candidate type={type(kv_candidate)}, out_len={len(out)})")
+                if kv is None:
+                    logger.warning(f"StageSegment: layer {i} returned no KV (kv_candidate type={type(kv_candidate)}, out_len={len(out)})")
+                if kv is None:
+                    logger.warning(f"Stage0: layer {i} returned no KV (kv_candidate type={type(kv_candidate)}, out_len={len(out)})")
 
         if not use_cache:
             return x, None
@@ -89,7 +120,22 @@ class StageSegment(nn.Module):
         else:
             raise ValueError(f"Unsupported LLaMA architecture: {type(full)}.")
 
-        self.layers = nn.ModuleList(raw_layers)
+        # Convert to OptimizedLlamaDecoderLayer if available
+        if OPTIMIZED_LAYER_AVAILABLE:
+            optimized_layers = []
+            for layer in raw_layers:
+                if isinstance(layer, OptimizedLlamaDecoderLayer):
+                    optimized_layers.append(layer)
+                elif isinstance(layer, LlamaDecoderLayer):
+                    # Create OptimizedLlamaDecoderLayer and copy weights
+                    opt_layer = OptimizedLlamaDecoderLayer(full.config)
+                    opt_layer.load_state_dict(layer.state_dict(), strict=False)
+                    optimized_layers.append(opt_layer)
+                else:
+                    optimized_layers.append(layer)
+            self.layers = nn.ModuleList(optimized_layers)
+        else:
+            self.layers = nn.ModuleList(raw_layers)
         self.config = full.config
 
     def forward(
@@ -155,7 +201,22 @@ class StageLast(nn.Module):
         else:
             raise ValueError(f"Unsupported LLaMA architecture: {type(full)}.")
 
-        self.layers = nn.ModuleList(raw_layers)
+        # Convert to OptimizedLlamaDecoderLayer if available
+        if OPTIMIZED_LAYER_AVAILABLE:
+            optimized_layers = []
+            for layer in raw_layers:
+                if isinstance(layer, OptimizedLlamaDecoderLayer):
+                    optimized_layers.append(layer)
+                elif isinstance(layer, LlamaDecoderLayer):
+                    # Create OptimizedLlamaDecoderLayer and copy weights
+                    opt_layer = OptimizedLlamaDecoderLayer(full.config)
+                    opt_layer.load_state_dict(layer.state_dict(), strict=False)
+                    optimized_layers.append(opt_layer)
+                else:
+                    optimized_layers.append(layer)
+            self.layers = nn.ModuleList(optimized_layers)
+        else:
+            self.layers = nn.ModuleList(raw_layers)
 
         self.lm_head = full.lm_head
         self.config = full.config
