@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import inspect
 from transformers import AutoModelForCausalLM
+from transformers.cache_utils import DynamicCache, Cache
 
 
 def _get_past_from_output(out):
@@ -233,6 +234,7 @@ class Stage0(nn.Module):
         self.layers = nn.ModuleList()
         model_type = getattr(full.config, "model_type", "").lower()
         is_llama_model = 'llama' in model_type or 'mistral' in model_type or 'mixtral' in model_type
+        self.is_llama_model = is_llama_model
         
         for layer in raw_layers:
             layer_type_name = type(layer).__name__
@@ -274,8 +276,20 @@ class Stage0(nn.Module):
             x = x + self.pos_embed(position_ids)
         # KV 캐시 리스트 초기화
         new_past = []
+        llama_cache = None
+        if self.is_llama_model and use_cache:
+            # HF LLaMA 레이어는 Cache 객체를 기대함
+            if isinstance(past_key_values, Cache):
+                llama_cache = past_key_values
+            else:
+                llama_cache = DynamicCache()
+            pkv_source = llama_cache
         for i, layer in enumerate(self.layers):
-            pkv = None if past_key_values is None else past_key_values[i]
+            pkv = None
+            if self.is_llama_model and use_cache:
+                pkv = llama_cache
+            else:
+                pkv = None if past_key_values is None else past_key_values[i]
 
             # kwargs 세팅
             kwargs = dict(attention_mask=attention_mask, use_cache=use_cache)
@@ -283,7 +297,9 @@ class Stage0(nn.Module):
                 kwargs['position_ids'] = position_ids
             # LLaMA: position_embeddings와 cache_position을 kwargs에 포함하지 않음
             # position_ids만 제공하면 내부적으로 RoPE를 계산함
-            if self._supports_past_key_value[i]:
+            if self.is_llama_model and use_cache:
+                kwargs['past_key_value'] = pkv
+            elif self._supports_past_key_value[i]:
                 kwargs['past_key_value'] = pkv
             elif self._supports_layer_past[i]:
                 # GPT-2 style: layer_past는 (key, value) 튜플 또는 None
