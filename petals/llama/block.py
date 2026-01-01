@@ -20,7 +20,11 @@ from transformers.models.llama.modeling_llama import (
     rotate_half,
 )
 
-from cuda_graphs import make_inference_graphed_callable
+try:
+    from cuda_graphs import make_inference_graphed_callable
+except ImportError:
+    # Fallback: try relative import
+    from .cuda_graphs import make_inference_graphed_callable
 
 
 def apply_rotary_pos_emb(q, k, cos, sin):

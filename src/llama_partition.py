@@ -14,9 +14,9 @@ logger = logging.getLogger(__name__)
 try:
     from petals.llama.block import OptimizedLlamaDecoderLayer
     OPTIMIZED_LAYER_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     OPTIMIZED_LAYER_AVAILABLE = False
-    logger.warning("OptimizedLlamaDecoderLayer not available, using default LlamaDecoderLayer")
+    logger.warning(f"OptimizedLlamaDecoderLayer not available ({e}), using default LlamaDecoderLayer")
 
 from .utils import extract_kv_tuple, default_position_ids
 
