@@ -612,6 +612,16 @@ class Stage0(nn.Module):
             layer_pos = position_ids if position_ids is not None else default_position_ids(
                 layer_past, x.shape[1], x.device
             )
+            # 입력 상태 확인 (prefill일 때만)
+            if is_prefill and i == 0:
+                input_before = x.clone()
+                input_min, input_max = input_before.min().item(), input_before.max().item()
+                input_mean, input_std = input_before.mean().item(), input_before.std().item()
+                logger.info(
+                    f"Stage0: Prefill - Layer {i} INPUT (before layer): "
+                    f"min={input_min:.4f}, max={input_max:.4f}, mean={input_mean:.4f}, std={input_std:.4f}"
+                )
+            
             out = layer(
                 x,
                 attention_mask=None,
@@ -627,13 +637,12 @@ class Stage0(nn.Module):
                 x_min, x_max = x.min().item(), x.max().item()
                 x_mean, x_std = x.mean().item(), x.std().item()
                 
-                # 입력 상태도 확인 (활성화값 폭발이 어디서 시작하는지 파악)
+                # Layer 0의 출력을 특별히 확인 (활성화값 폭발의 시작점)
                 if i == 0:
-                    input_min, input_max = x.min().item(), x.max().item()
-                    input_mean, input_std = x.mean().item(), x.std().item()
                     logger.info(
-                        f"Stage0: Prefill - Layer {i} INPUT stats: "
-                        f"min={input_min:.4f}, max={input_max:.4f}, mean={input_mean:.4f}, std={input_std:.4f}"
+                        f"Stage0: Prefill - Layer {i} OUTPUT (after layer): "
+                        f"min={x_min:.4f}, max={x_max:.4f}, mean={x_mean:.4f}, std={x_std:.4f}, "
+                        f"layer_type={type(layer).__name__}"
                     )
                 
                 if abs(x_min) > 100 or abs(x_max) > 100 or abs(x_mean) > 10 or x_std > 50:
