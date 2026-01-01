@@ -654,7 +654,7 @@ class Stage0(nn.Module):
                                         f"mean={w_mean:.4f}, std={w_std:.4f}"
                                     )
                                 else:
-                                    logger.debug(
+                                    logger.info(
                                         f"Stage0: Prefill - Layer {i} {key} OK: "
                                         f"abs_max={w_abs_max:.4f}, min={w_min:.4f}, max={w_max:.4f}"
                                     )
