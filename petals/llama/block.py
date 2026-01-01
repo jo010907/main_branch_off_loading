@@ -3,6 +3,7 @@ LLaMA intermediate layer
 Based on https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py
 See commit history for authorship.
 """
+import logging
 import math
 from typing import Optional, Tuple
 
@@ -25,6 +26,8 @@ try:
 except ImportError:
     # Fallback: try relative import
     from .cuda_graphs import make_inference_graphed_callable
+
+logger = logging.getLogger(__name__)
 
 
 def apply_rotary_pos_emb(q, k, cos, sin):
@@ -91,7 +94,26 @@ class OptimizedLlamaAttention(LlamaAttention):
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
         cos, sin = self.rotary_emb(value_states, position_ids)
+        
+        # Rotary embedding shape 확인 로그
+        is_prefill = q_len > 1
+        if is_prefill:
+            logger.info(
+                f"OptimizedLlamaAttention: Prefill - rotary_emb output shapes: "
+                f"cos={cos.shape}, sin={sin.shape}, "
+                f"query_states={query_states.shape}, key_states={key_states.shape}, "
+                f"position_ids={position_ids.shape if position_ids is not None else None}"
+            )
+        
         cos, sin = cos.unsqueeze(1), sin.unsqueeze(1)
+        
+        # Unsqueeze 후 shape 확인
+        if is_prefill:
+            logger.info(
+                f"OptimizedLlamaAttention: Prefill - After unsqueeze(1): "
+                f"cos={cos.shape}, sin={sin.shape}, "
+                f"query_states={query_states.shape}, key_states={key_states.shape}"
+            )
 
         if q_len == 1 and torch.is_inference_mode_enabled() and hidden_states.device.type == "cuda":
             query_states, key_states = self._optimized_apply_rotary(query_states, key_states, cos, sin)

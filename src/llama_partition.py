@@ -165,7 +165,129 @@ def _debug_conversion(original_layer: LlamaDecoderLayer, optimized_layer: Optimi
     return max_diff, output_diff_pct
 
 
-def _verify_layer_conversion(original_layer: LlamaDecoderLayer, optimized_layer: OptimizedLlamaDecoderLayer, 
+def comprehensive_layer1_debug(original_layer1: LlamaDecoderLayer, optimized_layer1: OptimizedLlamaDecoderLayer, 
+                                layer0_output: torch.Tensor):
+    """Layer1의 모든 부분을 체크"""
+    
+    logger.info("=== Layer1 Comprehensive Debug ===")
+    
+    # 1. 전체 state_dict 키 확인
+    orig_sd = original_layer1.state_dict()
+    opt_sd = optimized_layer1.state_dict()
+    
+    logger.info("1. State Dict Keys:")
+    logger.info(f"   Original: {len(orig_sd)} keys")
+    logger.info(f"   Optimized: {len(opt_sd)} keys")
+    
+    missing = set(orig_sd.keys()) - set(opt_sd.keys())
+    if missing:
+        logger.warning(f"   ⚠️ Missing keys: {missing}")
+    
+    # 2. 각 서브모듈별 가중치 비교
+    logger.info("2. Submodule Weight Comparison:")
+    
+    modules_to_check = {
+        'mlp': ['gate_proj', 'up_proj', 'down_proj'],
+        'post_attention_layernorm': ['weight'],
+        'input_layernorm': ['weight'],
+        'self_attn': ['q_proj', 'k_proj', 'v_proj', 'o_proj']
+    }
+    
+    for mod_name, param_names in modules_to_check.items():
+        orig_mod = getattr(original_layer1, mod_name, None)
+        opt_mod = getattr(optimized_layer1, mod_name, None)
+        
+        if orig_mod is None or opt_mod is None:
+            continue
+        
+        for param_name in param_names:
+            try:
+                orig_param_obj = getattr(orig_mod, param_name, None)
+                opt_param_obj = getattr(opt_mod, param_name, None)
+                
+                if orig_param_obj is None or opt_param_obj is None:
+                    continue
+                
+                orig_param = orig_param_obj.weight if hasattr(orig_param_obj, 'weight') else orig_param_obj
+                opt_param = opt_param_obj.weight if hasattr(opt_param_obj, 'weight') else opt_param_obj
+                
+                if orig_param.shape != opt_param.shape:
+                    logger.error(f"   {mod_name}.{param_name}: Shape mismatch! {orig_param.shape} vs {opt_param.shape}")
+                    continue
+                
+                diff = (orig_param.cpu().float() - opt_param.cpu().float()).abs().max()
+                logger.info(f"   {mod_name}.{param_name}: max_diff = {diff:.10f}")
+                if diff > 1e-4:
+                    logger.warning(f"      ⚠️ LARGE DIFFERENCE!")
+            except Exception as e:
+                logger.warning(f"   {mod_name}.{param_name}: Error checking - {e}")
+    
+    # 3. Forward 단계별 확인
+    logger.info("3. Forward Pass Step-by-Step:")
+    
+    original_layer1.eval()
+    optimized_layer1.eval()
+    
+    with torch.no_grad():
+        # Input LayerNorm
+        orig_norm1 = original_layer1.input_layernorm(layer0_output)
+        opt_norm1 = optimized_layer1.input_layernorm(layer0_output)
+        norm1_diff = (orig_norm1 - opt_norm1).abs().mean()
+        logger.info(f"   Input LayerNorm diff: {norm1_diff:.6f}")
+        logger.info(f"   Input LayerNorm stats - orig: min={orig_norm1.min().item():.4f}, max={orig_norm1.max().item():.4f}, mean={orig_norm1.mean().item():.4f}")
+        logger.info(f"   Input LayerNorm stats - opt:  min={opt_norm1.min().item():.4f}, max={opt_norm1.max().item():.4f}, mean={opt_norm1.mean().item():.4f}")
+        
+        # Attention
+        # position_ids 생성
+        position_ids = torch.arange(layer0_output.shape[1], device=layer0_output.device).unsqueeze(0)
+        orig_attn_out = original_layer1.self_attn(orig_norm1, position_ids=position_ids, use_cache=False)[0]
+        opt_attn_out = optimized_layer1.self_attn(opt_norm1, position_ids=position_ids, use_cache=False)[0]
+        attn_diff = (orig_attn_out - opt_attn_out).abs().mean()
+        logger.info(f"   Attention output diff: {attn_diff:.6f}")
+        logger.info(f"   Attention output stats - orig: min={orig_attn_out.min().item():.4f}, max={orig_attn_out.max().item():.4f}, mean={orig_attn_out.mean().item():.4f}")
+        logger.info(f"   Attention output stats - opt:  min={opt_attn_out.min().item():.4f}, max={opt_attn_out.max().item():.4f}, mean={opt_attn_out.mean().item():.4f}")
+        
+        # Residual 1
+        orig_res1 = layer0_output + orig_attn_out
+        opt_res1 = layer0_output + opt_attn_out
+        res1_diff = (orig_res1 - opt_res1).abs().mean()
+        logger.info(f"   After residual1 diff: {res1_diff:.6f}")
+        logger.info(f"   After residual1 stats - orig: min={orig_res1.min().item():.4f}, max={orig_res1.max().item():.4f}, mean={orig_res1.mean().item():.4f}")
+        logger.info(f"   After residual1 stats - opt:  min={opt_res1.min().item():.4f}, max={opt_res1.max().item():.4f}, mean={opt_res1.mean().item():.4f}")
+        
+        # Post-Attention LayerNorm (MLP 입력)
+        orig_mlp_input = original_layer1.post_attention_layernorm(orig_res1)
+        opt_mlp_input = optimized_layer1.post_attention_layernorm(opt_res1)
+        mlp_input_diff = (orig_mlp_input - opt_mlp_input).abs().mean()
+        logger.info(f"   MLP input (post-norm) diff: {mlp_input_diff:.6f}")
+        logger.info(f"   MLP input stats - orig: min={orig_mlp_input.min().item():.4f}, max={orig_mlp_input.max().item():.4f}, mean={orig_mlp_input.mean().item():.4f}, abs_max={orig_mlp_input.abs().max().item():.4f}, abs_mean={orig_mlp_input.abs().mean().item():.4f}")
+        logger.info(f"   MLP input stats - opt:  min={opt_mlp_input.min().item():.4f}, max={opt_mlp_input.max().item():.4f}, mean={opt_mlp_input.mean().item():.4f}, abs_max={opt_mlp_input.abs().max().item():.4f}, abs_mean={opt_mlp_input.abs().mean().item():.4f}")
+        
+        # MLP 출력 (폭발하는 부분)
+        orig_mlp_out = original_layer1.mlp(orig_mlp_input)
+        opt_mlp_out = optimized_layer1.mlp(opt_mlp_input)
+        mlp_out_diff = (orig_mlp_out - opt_mlp_out).abs().mean()
+        logger.info(f"   MLP output diff: {mlp_out_diff:.6f}")
+        logger.info(f"   MLP output stats - orig: min={orig_mlp_out.min().item():.4f}, max={orig_mlp_out.max().item():.4f}, mean={orig_mlp_out.mean().item():.4f}, abs_max={orig_mlp_out.abs().max().item():.4f}, abs_mean={orig_mlp_out.abs().mean().item():.4f}")
+        logger.info(f"   MLP output stats - opt:  min={opt_mlp_out.min().item():.4f}, max={opt_mlp_out.max().item():.4f}, mean={opt_mlp_out.mean().item():.4f}, abs_max={opt_mlp_out.abs().max().item():.4f}, abs_mean={opt_mlp_out.abs().mean().item():.4f}")
+        
+        if opt_mlp_out.abs().max() > orig_mlp_out.abs().max() * 10:
+            logger.error(f"      🚨 ACTIVATION EXPLOSION DETECTED!")
+            logger.error(f"      Original max: {orig_mlp_out.abs().max().item():.4f}")
+            logger.error(f"      Optimized max: {opt_mlp_out.abs().max().item():.4f}")
+        
+        # Final output
+        orig_final = orig_res1 + orig_mlp_out
+        opt_final = opt_res1 + opt_mlp_out
+        final_diff = (orig_final - opt_final).abs().mean()
+        logger.info(f"   Final output (after residual2) diff: {final_diff:.6f}")
+        logger.info(f"   Final output stats - orig: min={orig_final.min().item():.4f}, max={orig_final.max().item():.4f}, mean={orig_final.mean().item():.4f}")
+        logger.info(f"   Final output stats - opt:  min={opt_final.min().item():.4f}, max={opt_final.max().item():.4f}, mean={opt_final.mean().item():.4f}")
+    
+    logger.info("=== End Layer1 Comprehensive Debug ===\n")
+
+
+def _verify_layer_conversion(original_layer: LlamaDecoderLayer, optimized_layer: OptimizedLlamaDecoderLayer,
                              config, layer_idx: int) -> bool:
     """Verify that the converted layer produces the same output as the original."""
     try:
@@ -577,6 +699,9 @@ class Stage0(nn.Module):
         else:
             raise ValueError(f"Unsupported LLaMA architecture: {type(full)}.")
 
+        # 원본 레이어 저장 (디버깅용)
+        self.original_layers = nn.ModuleList(raw_layers)
+
         # device와 dtype 추출
         device = None
         dtype = None
@@ -670,6 +795,19 @@ class Stage0(nn.Module):
                     f"Stage0: Prefill - Layer {i} after input_layernorm: "
                     f"min={x_after_input_norm.min().item():.4f}, max={x_after_input_norm.max().item():.4f}, "
                     f"mean={x_after_input_norm.mean().item():.4f}, std={x_after_input_norm.std().item():.4f}"
+                )
+                
+                # Rotary embedding 직접 확인 (원본 transformers와 비교)
+                attn = layer.self_attn
+                test_hidden = x_after_input_norm  # [batch, seq_len, hidden_size]
+                test_pos = layer_pos  # [batch, seq_len]
+                
+                # rotary_emb 출력 shape 확인
+                cos_test, sin_test = attn.rotary_emb(test_hidden, test_pos)
+                logger.info(
+                    f"Stage0: Prefill - Layer {i} rotary_emb direct call: "
+                    f"input_hidden_shape={test_hidden.shape}, position_ids_shape={test_pos.shape}, "
+                    f"cos_shape={cos_test.shape}, sin_shape={sin_test.shape}"
                 )
                 
                 # 2. Attention
@@ -876,6 +1014,16 @@ class Stage0(nn.Module):
                     output_attentions=False,
                 )
                 x = out[0]
+            
+            # Layer 0 출력 후 Layer 1 실행 전에 comprehensive 디버깅
+            if is_prefill and i == 0 and len(self.original_layers) > 1:
+                layer0_output = x.clone()
+                original_layer1 = self.original_layers[1]
+                optimized_layer1 = self.layers[1] if len(self.layers) > 1 else None
+                
+                if optimized_layer1 is not None and isinstance(optimized_layer1, OptimizedLlamaDecoderLayer):
+                    logger.info("Stage0: Prefill - Running comprehensive Layer1 debug comparison...")
+                    comprehensive_layer1_debug(original_layer1, optimized_layer1, layer0_output)
             
             # 각 레이어 출력 확인 (prefill일 때만 상세 로깅)
             if is_prefill:
