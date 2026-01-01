@@ -659,15 +659,87 @@ class Stage0(nn.Module):
                                         f"abs_max={w_abs_max:.4f}, min={w_min:.4f}, max={w_max:.4f}"
                                     )
             
-            out = layer(
-                x,
-                attention_mask=None,
-                position_ids=layer_pos,
-                past_key_value=layer_past,
-                use_cache=use_cache,
-                output_attentions=False,
-            )
-            x = out[0]
+            # Layer 1의 forward pass 중간 단계 확인 (활성화값 폭발 원인 파악)
+            if is_prefill and i == 1 and isinstance(layer, OptimizedLlamaDecoderLayer):
+                # Layer 1의 forward pass를 수동으로 추적
+                residual = x.clone()
+                
+                # 1. Input layernorm
+                x_after_input_norm = layer.input_layernorm(x)
+                logger.info(
+                    f"Stage0: Prefill - Layer {i} after input_layernorm: "
+                    f"min={x_after_input_norm.min().item():.4f}, max={x_after_input_norm.max().item():.4f}, "
+                    f"mean={x_after_input_norm.mean().item():.4f}, std={x_after_input_norm.std().item():.4f}"
+                )
+                
+                # 2. Attention
+                attn_out = layer.self_attn(
+                    hidden_states=x_after_input_norm,
+                    attention_mask=None,
+                    position_ids=layer_pos,
+                    past_key_value=layer_past,
+                    output_attentions=False,
+                    use_cache=use_cache,
+                )
+                x_after_attn = attn_out[0]
+                logger.info(
+                    f"Stage0: Prefill - Layer {i} after attention: "
+                    f"min={x_after_attn.min().item():.4f}, max={x_after_attn.max().item():.4f}, "
+                    f"mean={x_after_attn.mean().item():.4f}, std={x_after_attn.std().item():.4f}"
+                )
+                
+                # 3. Residual connection
+                x_after_residual1 = residual + x_after_attn
+                logger.info(
+                    f"Stage0: Prefill - Layer {i} after residual1: "
+                    f"min={x_after_residual1.min().item():.4f}, max={x_after_residual1.max().item():.4f}, "
+                    f"mean={x_after_residual1.mean().item():.4f}, std={x_after_residual1.std().item():.4f}"
+                )
+                
+                # 4. Post attention layernorm
+                x_after_post_norm = layer.post_attention_layernorm(x_after_residual1)
+                logger.info(
+                    f"Stage0: Prefill - Layer {i} after post_attention_layernorm: "
+                    f"min={x_after_post_norm.min().item():.4f}, max={x_after_post_norm.max().item():.4f}, "
+                    f"mean={x_after_post_norm.mean().item():.4f}, std={x_after_post_norm.std().item():.4f}"
+                )
+                
+                # 5. MLP
+                x_after_mlp = layer.mlp(x_after_post_norm)
+                logger.info(
+                    f"Stage0: Prefill - Layer {i} after MLP: "
+                    f"min={x_after_mlp.min().item():.4f}, max={x_after_mlp.max().item():.4f}, "
+                    f"mean={x_after_mlp.mean().item():.4f}, std={x_after_mlp.std().item():.4f}"
+                )
+                
+                # 6. Final residual
+                x_final = x_after_residual1 + x_after_mlp
+                logger.info(
+                    f"Stage0: Prefill - Layer {i} after residual2 (FINAL): "
+                    f"min={x_final.min().item():.4f}, max={x_final.max().item():.4f}, "
+                    f"mean={x_final.mean().item():.4f}, std={x_final.std().item():.4f}"
+                )
+                
+                # 정상 forward pass도 실행 (KV cache를 위해)
+                out = layer(
+                    x,
+                    attention_mask=None,
+                    position_ids=layer_pos,
+                    past_key_value=layer_past,
+                    use_cache=use_cache,
+                    output_attentions=False,
+                )
+                x = out[0]
+            else:
+                out = layer(
+                    x,
+                    attention_mask=None,
+                    position_ids=layer_pos,
+                    past_key_value=layer_past,
+                    use_cache=use_cache,
+                    output_attentions=False,
+                )
+                x = out[0]
             
             # 각 레이어 출력 확인 (prefill일 때만 상세 로깅)
             if is_prefill:
