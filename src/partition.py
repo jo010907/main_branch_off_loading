@@ -270,6 +270,20 @@ class Stage0(nn.Module):
             hidden = outputs[0]
             pkv = outputs.past_key_values if hasattr(outputs, "past_key_values") else None
             return hidden, pkv
+        if self.is_llama_model:
+            x = self.embed_tokens(input_ids)
+            cache = past_key_values if isinstance(past_key_values, Cache) else (DynamicCache() if use_cache else None)
+            for layer in self.layers:
+                out = layer(
+                    x,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_value=cache,
+                    use_cache=use_cache,
+                    output_attentions=False,
+                )
+                x = out[0]
+            return x, cache if use_cache else None
         x = self.embed_tokens(input_ids)
         # Position Embedding
         if hasattr(self, 'pos_embed') and self.pos_embed is not None and position_ids is not None:
