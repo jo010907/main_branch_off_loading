@@ -21,10 +21,132 @@ except Exception as e:  # pragma: no cover - optional dependency
     logger.warning(f"OptimizedLlamaDecoderLayer not available ({e}), using vanilla LlamaDecoderLayer.")
 
 
+def _debug_conversion(original_layer: LlamaDecoderLayer, optimized_layer: OptimizedLlamaDecoderLayer, 
+                      layer_idx: int) -> tuple[float, float]:
+    """Detailed debugging of layer conversion."""
+    # 1. State dict 키 비교 (가중치 + buffer 포함)
+    orig_sd = original_layer.state_dict()
+    opt_sd = optimized_layer.state_dict()
+    
+    logger.info(f"Layer {layer_idx}: === State Dict Keys ===")
+    logger.info(f"Layer {layer_idx}: Original has {len(orig_sd)} keys")
+    logger.info(f"Layer {layer_idx}: Optimized has {len(opt_sd)} keys")
+    
+    missing = set(orig_sd.keys()) - set(opt_sd.keys())
+    extra = set(opt_sd.keys()) - set(orig_sd.keys())
+    
+    if missing:
+        logger.error(f"Layer {layer_idx}: Missing in optimized: {list(missing)}")
+    if extra:
+        logger.warning(f"Layer {layer_idx}: Extra in optimized: {list(extra)[:10]}")
+    
+    # 1-1. Buffer 명시적 확인 (특히 rotary_emb)
+    orig_buffers = dict(original_layer.named_buffers())
+    opt_buffers = dict(optimized_layer.named_buffers())
+    
+    logger.info(f"Layer {layer_idx}: === Buffers ===")
+    logger.info(f"Layer {layer_idx}: Original buffers: {list(orig_buffers.keys())[:10]}")
+    logger.info(f"Layer {layer_idx}: Optimized buffers: {list(opt_buffers.keys())[:10]}")
+    
+    missing_buffers = set(orig_buffers.keys()) - set(opt_buffers.keys())
+    if missing_buffers:
+        logger.error(f"Layer {layer_idx}: Missing buffers: {list(missing_buffers)}")
+    
+    # Rotary embedding buffer 확인
+    if hasattr(original_layer, 'self_attn') and hasattr(original_layer.self_attn, 'rotary_emb'):
+        orig_rotary_buffers = dict(original_layer.self_attn.rotary_emb.named_buffers())
+        if hasattr(optimized_layer, 'self_attn') and hasattr(optimized_layer.self_attn, 'rotary_emb'):
+            opt_rotary_buffers = dict(optimized_layer.self_attn.rotary_emb.named_buffers())
+            logger.info(f"Layer {layer_idx}: Rotary embedding buffers - original: {list(orig_rotary_buffers.keys())}, optimized: {list(opt_rotary_buffers.keys())}")
+            
+            for buffer_name in orig_rotary_buffers:
+                if buffer_name in opt_rotary_buffers:
+                    orig_buf = orig_rotary_buffers[buffer_name]
+                    opt_buf = opt_rotary_buffers[buffer_name]
+                    if not torch.equal(orig_buf, opt_buf):
+                        buf_diff = (orig_buf - opt_buf).abs().max().item()
+                        logger.error(f"Layer {layer_idx}: Rotary buffer '{buffer_name}' mismatch: {buf_diff:.8f}")
+                    else:
+                        logger.debug(f"Layer {layer_idx}: Rotary buffer '{buffer_name}' OK")
+                else:
+                    logger.error(f"Layer {layer_idx}: Rotary buffer '{buffer_name}' missing in optimized")
+    
+    # 2. 가중치 직접 비교 (공통 키만)
+    common_keys = set(orig_sd.keys()) & set(opt_sd.keys())
+    max_diff = 0.0
+    max_diff_key = None
+    mismatched_keys = []
+    
+    for key in common_keys:
+        orig_tensor = orig_sd[key]
+        opt_tensor = opt_sd[key]
+        
+        # Shape 확인
+        if orig_tensor.shape != opt_tensor.shape:
+            logger.error(f"Layer {layer_idx}: Shape mismatch for {key}: {orig_tensor.shape} vs {opt_tensor.shape}")
+            continue
+        
+        # CPU, float32로 변환하여 비교
+        orig_tensor = orig_tensor.cpu().float()
+        opt_tensor = opt_tensor.cpu().float()
+        
+        diff = (orig_tensor - opt_tensor).abs().max().item()
+        if diff > max_diff:
+            max_diff = diff
+            max_diff_key = key
+        if diff > 1e-5:
+            mismatched_keys.append((key, diff))
+            logger.error(f"Layer {layer_idx}:   {key}: max diff = {diff:.8f}")
+    
+    if max_diff_key:
+        logger.info(f"Layer {layer_idx}: Max difference in '{max_diff_key}': {max_diff:.8f}")
+    
+    # 3. Forward 결과 비교
+    device = next(original_layer.parameters()).device
+    dtype = next(original_layer.parameters()).dtype
+    batch_size, seq_len = 2, 10
+    hidden_states = torch.randn(
+        batch_size, seq_len, original_layer.hidden_size,
+        device=device,
+        dtype=dtype
+    )
+    
+    position_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0).expand(batch_size, -1)
+    
+    original_layer.eval()
+    optimized_layer.eval()
+    
+    with torch.no_grad():
+        orig_out = original_layer(
+            hidden_states=hidden_states,
+            position_ids=position_ids,
+            use_cache=False,
+            output_attentions=False,
+        )[0]
+        opt_out = optimized_layer(
+            hidden_states=hidden_states,
+            position_ids=position_ids,
+            use_cache=False,
+            output_attentions=False,
+        )[0]
+    
+    output_diff = (orig_out - opt_out).abs().mean().item()
+    output_diff_pct = (output_diff / (orig_out.abs().mean().item() + 1e-8)) * 100
+    
+    logger.info(f"Layer {layer_idx}: === Forward Output Comparison ===")
+    logger.info(f"Layer {layer_idx}: Mean absolute difference: {output_diff:.8f}")
+    logger.info(f"Layer {layer_idx}: Percentage difference: {output_diff_pct:.4f}%")
+    
+    return max_diff, output_diff_pct
+
+
 def _verify_layer_conversion(original_layer: LlamaDecoderLayer, optimized_layer: OptimizedLlamaDecoderLayer, 
                              config, layer_idx: int) -> bool:
     """Verify that the converted layer produces the same output as the original."""
     try:
+        # 상세 디버깅 실행
+        max_weight_diff, output_diff_pct = _debug_conversion(original_layer, optimized_layer, layer_idx)
+        
         # 입력 텐서 생성 (원본 레이어의 device와 dtype 사용)
         device = original_layer.input_layernorm.weight.device
         dtype = original_layer.input_layernorm.weight.dtype
@@ -76,20 +198,12 @@ def _verify_layer_conversion(original_layer: LlamaDecoderLayer, optimized_layer:
                 f"std_diff={std_diff:.6f}, relative_max_diff={relative_max_diff:.4f}%, dtype={dtype}"
             )
             
-            # 가중치 재확인
-            logger.warning(f"Layer {layer_idx}: Re-checking key weights...")
-            original_state = original_layer.state_dict()
-            optimized_state = optimized_layer.state_dict()
-            key_checks = ['self_attn.q_proj.weight', 'self_attn.k_proj.weight', 'self_attn.v_proj.weight']
-            for key in key_checks:
-                if key in original_state and key in optimized_state:
-                    orig = original_state[key].cpu().float()
-                    opt = optimized_state[key].cpu().float()
-                    weight_diff = (orig - opt).abs().max().item()
-                    if weight_diff > 1e-5:
-                        logger.error(f"Layer {layer_idx}: Weight mismatch for {key}: {weight_diff:.8f}")
-                    else:
-                        logger.debug(f"Layer {layer_idx}: Weight OK for {key}: {weight_diff:.8f}")
+            # 가중치 차이와 출력 차이 비교
+            if max_weight_diff > 1e-4:
+                logger.error(
+                    f"Layer {layer_idx}: Large weight difference detected ({max_weight_diff:.8f})! "
+                    f"This is likely the cause of output mismatch."
+                )
             
             # 상대 오차가 작으면 (1% 미만) 경고만 출력하고 계속 진행
             if relative_max_diff < 1.0:
@@ -148,8 +262,13 @@ def _convert_layers(raw_layers: nn.ModuleList, config, device=None, dtype=None, 
             if unexpected_before:
                 logger.warning(f"Layer {idx}: Keys in optimized but not in original (before load): {list(unexpected_before)[:10]}")
             
-            # 4. 가중치 로드 (strict=True로 시도, 실패하면 strict=False)
-            # 만약 strict=False로도 실패하면, 서브모듈별로 직접 복사 시도
+            # 4. 가중치 및 Buffer 로드
+            # state_dict()는 기본적으로 buffer도 포함하지만, 명시적으로 확인
+            original_buffers = dict(layer.named_buffers())
+            logger.debug(f"Layer {idx}: Original buffers: {list(original_buffers.keys())[:10]}")
+            
+            # load_state_dict는 buffer도 복사하지만, 명시적으로 확인하기 위해
+            # strict=True로 시도, 실패하면 strict=False
             try:
                 missing, unexpected = opt_layer.load_state_dict(original_state_dict, strict=True)
                 if missing:
@@ -166,10 +285,21 @@ def _convert_layers(raw_layers: nn.ModuleList, config, device=None, dtype=None, 
                     # 서브모듈별로 직접 복사 시도
                     logger.info(f"Layer {idx}: Attempting to copy weights module by module...")
                     try:
-                        # self_attn 복사
+                        # self_attn 복사 (가중치 + buffer)
                         if hasattr(layer, 'self_attn') and hasattr(opt_layer, 'self_attn'):
                             opt_layer.self_attn.load_state_dict(layer.self_attn.state_dict(), strict=False)
-                            logger.info(f"Layer {idx}: Copied self_attn weights")
+                            # Rotary embedding buffer 명시적 복사
+                            if hasattr(layer.self_attn, 'rotary_emb') and hasattr(opt_layer.self_attn, 'rotary_emb'):
+                                orig_rotary_buffers = dict(layer.self_attn.rotary_emb.named_buffers())
+                                opt_rotary_buffers = dict(opt_layer.self_attn.rotary_emb.named_buffers())
+                                for buffer_name, buffer_value in orig_rotary_buffers.items():
+                                    if buffer_name in opt_rotary_buffers:
+                                        opt_buffer = getattr(opt_layer.self_attn.rotary_emb, buffer_name)
+                                        opt_buffer.data.copy_(buffer_value.data)
+                                        logger.debug(f"Layer {idx}: Copied rotary_emb buffer: {buffer_name}")
+                                    else:
+                                        logger.warning(f"Layer {idx}: Rotary buffer {buffer_name} not found in optimized layer")
+                            logger.info(f"Layer {idx}: Copied self_attn weights and buffers")
                         
                         # mlp 복사
                         if hasattr(layer, 'mlp') and hasattr(opt_layer, 'mlp'):
@@ -192,10 +322,31 @@ def _convert_layers(raw_layers: nn.ModuleList, config, device=None, dtype=None, 
                         else:
                             logger.info(f"Layer {idx}: ✓ All weights copied successfully via module-by-module approach")
                     except Exception as module_copy_error:
-                        logger.error(f"Layer {idx}: Module-by-module copy failed: {module_copy_error}")
+                        logger.error(f"Layer {idx}: Module-by-module copy failed: {module_copy_error}", exc_info=True)
                 
                 if unexpected:
                     logger.warning(f"Layer {idx}: unexpected keys after strict=False: {list(unexpected)[:10]}")
+            
+            # 4-1. Buffer 명시적 복사 확인 (특히 rotary_emb)
+            if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'rotary_emb'):
+                if hasattr(opt_layer, 'self_attn') and hasattr(opt_layer.self_attn, 'rotary_emb'):
+                    orig_rotary = layer.self_attn.rotary_emb
+                    opt_rotary = opt_layer.self_attn.rotary_emb
+                    
+                    # Rotary embedding의 모든 buffer 확인 및 복사
+                    orig_rotary_buffers = dict(orig_rotary.named_buffers())
+                    opt_rotary_buffers = dict(opt_rotary.named_buffers())
+                    
+                    logger.debug(f"Layer {idx}: Rotary embedding buffers - original: {list(orig_rotary_buffers.keys())}, optimized: {list(opt_rotary_buffers.keys())}")
+                    
+                    for buffer_name, orig_buffer in orig_rotary_buffers.items():
+                        if buffer_name in opt_rotary_buffers:
+                            opt_buffer = getattr(opt_rotary, buffer_name)
+                            if not torch.equal(orig_buffer, opt_buffer):
+                                opt_buffer.data.copy_(orig_buffer.data)
+                                logger.info(f"Layer {idx}: Copied rotary_emb buffer: {buffer_name}")
+                        else:
+                            logger.warning(f"Layer {idx}: Rotary buffer {buffer_name} not found in optimized layer")
             
             # 4. 디바이스 이동 (원본 레이어와 동일한 device로)
             if device is not None:
