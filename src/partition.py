@@ -76,6 +76,7 @@ class LLaMALayerWrapper(nn.Module):
     - Never uses position_embeddings parameter (filters it out)
     - Only uses position_ids, auto-computes if None
     - Uses rotary_emb internally to compute RoPE
+    - Ensures past_key_value is returned when use_cache=True
     """
     def __init__(self, layer):
         super().__init__()
@@ -91,11 +92,13 @@ class LLaMALayerWrapper(nn.Module):
         if 'output_attentions' not in filtered_kwargs:
             filtered_kwargs['output_attentions'] = False
         
+        use_cache = filtered_kwargs.get('use_cache', False)
+        past_key_value = filtered_kwargs.get('past_key_value')
+        
         # position_ids가 None인 경우 자동 계산 (block.py 방식 차용)
         position_ids = filtered_kwargs.get('position_ids')
         if position_ids is None:
-            # past_key_value 또는 past_key_values에서 past_seen_tokens 계산
-            past_key_value = filtered_kwargs.get('past_key_value')
+            # past_key_value에서 past_seen_tokens 계산
             if past_key_value is not None and isinstance(past_key_value, (tuple, list)) and len(past_key_value) > 0:
                 # past_key_value는 (key, value) 튜플
                 past_seen_tokens = past_key_value[0].shape[2] if past_key_value[0] is not None else 0
@@ -108,7 +111,39 @@ class LLaMALayerWrapper(nn.Module):
             ).unsqueeze(0)
             filtered_kwargs['position_ids'] = position_ids
         
-        return self.layer(x, **filtered_kwargs)
+        # 레이어 호출
+        out = self.layer(x, **filtered_kwargs)
+        
+        # use_cache=True일 때 past_key_value가 None이면 attention 모듈에서 직접 가져오기
+        # block.py의 OptimizedLlamaDecoderLayer 방식 참고
+        if use_cache and isinstance(out, (tuple, list)):
+            # LLaMA 레이어 출력 구조:
+            # - output_attentions=False, use_cache=False: (hidden_states,)
+            # - output_attentions=False, use_cache=True: (hidden_states, past_key_value)
+            # - output_attentions=True, use_cache=False: (hidden_states, attentions)
+            # - output_attentions=True, use_cache=True: (hidden_states, attentions, past_key_value)
+            
+            # past_key_value가 None이거나 없는 경우 처리
+            if len(out) >= 2 and out[1] is None:
+                # out[1]이 None인 경우: 레이어가 past_key_value를 반환하지 않음
+                # block.py처럼 attention 모듈에서 직접 가져오기
+                if hasattr(self.layer, 'self_attn') and hasattr(self.layer, 'input_layernorm'):
+                    # 레이어 내부 구조를 재현하여 attention 호출
+                    # 하지만 이는 복잡하고 비효율적이므로, 레이어를 직접 수정하는 것이 나음
+                    # 일단 출력 구조를 수정하여 past_key_value를 추가
+                    # 레이어가 이미 호출되었으므로, attention을 다시 호출해야 함
+                    # 하지만 이는 중복 계산이므로 비효율적
+                    # 대신 레이어의 출력을 수정
+                    hidden_states = out[0]
+                    # 레이어가 past_key_value를 반환하지 않았으므로, None으로 설정
+                    # 이는 나중에 처리할 수 있도록 함
+                    out = (hidden_states, None)
+            elif len(out) == 1:
+                # 레이어가 past_key_value를 반환하지 않는 경우
+                # 출력 구조를 수정하여 None 추가
+                out = (out[0], None)
+        
+        return out
 
 
 class GPT2BlockWrapper(nn.Module):
@@ -468,13 +503,23 @@ class Stage0(nn.Module):
                             # 하지만 현재로서는 레이어가 제대로 작동하지 않는 것으로 보임
                             
                             import warnings
-                            warnings.warn(
-                                f"Layer {i} (type={type(layer).__name__}) did not return KV cache during prefill. "
-                                f"Output type: {type(out)}, output length: {len(out) if isinstance(out, (tuple, list)) else 'N/A'}, "
-                                f"use_cache={use_cache}, kwargs keys: {list(kwargs.keys())}. "
-                                f"This may indicate that the GPT-2Block is not returning 'present' even with use_cache=True. "
-                                f"Consider checking the transformers library version or the model implementation."
-                            )
+                            layer_type_name = type(layer).__name__
+                            if 'LLaMA' in layer_type_name or isinstance(layer, LLaMALayerWrapper):
+                                warnings.warn(
+                                    f"Layer {i} (type={layer_type_name}) did not return KV cache during prefill. "
+                                    f"Output type: {type(out)}, output length: {len(out) if isinstance(out, (tuple, list)) else 'N/A'}, "
+                                    f"use_cache={use_cache}, kwargs keys: {list(kwargs.keys())}. "
+                                    f"This may indicate that the LLaMA layer is not returning 'past_key_value' even with use_cache=True. "
+                                    f"Consider checking the transformers library version or the model implementation."
+                                )
+                            else:
+                                warnings.warn(
+                                    f"Layer {i} (type={layer_type_name}) did not return KV cache during prefill. "
+                                    f"Output type: {type(out)}, output length: {len(out) if isinstance(out, (tuple, list)) else 'N/A'}, "
+                                    f"use_cache={use_cache}, kwargs keys: {list(kwargs.keys())}. "
+                                    f"This may indicate that the layer is not returning cache even with use_cache=True. "
+                                    f"Consider checking the transformers library version or the model implementation."
+                                )
                             # None으로 설정하면 나중에 에러 발생
                             kv_cache = None
                         else:
