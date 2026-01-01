@@ -30,51 +30,67 @@ class LlamaDecoderLayerWrapper(nn.Module):
         super().__init__()
         self.layer = layer
     
-    def forward(self, *args, **kwargs):
-        out = self.layer(*args, **kwargs)
-        use_cache = kwargs.get('use_cache', False)
-        
-        # 기본 LlamaDecoderLayer는 past_key_value를 반환하지 않을 수 있으므로
-        # self_attn의 출력에서 직접 추출
-        if use_cache and (len(out) < 2 or out[1] is None):
-            # self_attn을 직접 호출하여 past_key_value 가져오기
-            hidden_states = args[0] if args else kwargs.get('hidden_states')
-            attention_mask = kwargs.get('attention_mask')
-            position_ids = kwargs.get('position_ids')
-            past_key_value = kwargs.get('past_key_value')
-            output_attentions = kwargs.get('output_attentions', False)
-            
-            # input_layernorm
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.Tensor] = None,
+        past_key_value: Optional[Tuple] = None,
+        output_attentions: bool = False,
+        use_cache: bool = False,
+        **kwargs,
+    ):
+        # 강제로 use_cache=True로 self_attn을 호출하여 present_key_value를 확보
+        cache_flag = True if use_cache else False
+        if cache_flag:
             residual = hidden_states
             hidden_states = self.layer.input_layernorm(hidden_states)
-            
-            # self_attn 호출하여 past_key_value 가져오기
+
             attn_out = self.layer.self_attn(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
                 past_key_value=past_key_value,
-                output_attentions=output_attentions,
-                use_cache=use_cache,
+                output_attentions=False,
+                use_cache=True,
             )
-            hidden_states, self_attn_weights, present_key_value = attn_out
-            hidden_states = residual + hidden_states
-            
-            # MLP
+
+            if len(attn_out) == 3:
+                attn_output, self_attn_weights, present_key_value = attn_out
+            elif len(attn_out) == 2:
+                attn_output, present_key_value = attn_out
+                self_attn_weights = None
+            else:
+                raise ValueError(f"Unexpected self_attn output length: {len(attn_out)}")
+
+            if present_key_value is None:
+                # 마지막 수단: 현재 key/value를 past_key_value에서 가져와 넘겨준다
+                present_key_value = present_key_value if present_key_value is not None else past_key_value
+                logger.warning("LlamaDecoderLayerWrapper: present_key_value is None, falling back to past_key_value")
+
+            hidden_states = residual + attn_output
             residual = hidden_states
             hidden_states = self.layer.post_attention_layernorm(hidden_states)
             hidden_states = self.layer.mlp(hidden_states)
             hidden_states = residual + hidden_states
-            
-            # 출력 구성
+
             outputs = (hidden_states,)
             if output_attentions:
                 outputs += (self_attn_weights,)
-            if use_cache:
+            if cache_flag:
                 outputs += (present_key_value,)
             return outputs
-        
-        return out
+
+        # use_cache=False는 기본 레이어 호출
+        return self.layer(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=False,
+            **kwargs,
+        )
 
 
 class Stage0(nn.Module):
@@ -174,7 +190,8 @@ class Stage0(nn.Module):
             if use_cache:
                 # 디버깅: 레이어 출력 구조 확인
                 if i == 0:
-                    logger.info(f"Stage0 layer {i} output: type={type(out)}, len={len(out)}, "
+                    layer_type = type(layer).__name__
+                    logger.info(f"Stage0 layer {i} (type={layer_type}) output: type={type(out)}, len={len(out)}, "
                                f"out[0] type={type(out[0])}, out[-1] type={type(out[-1]) if len(out) > 0 else 'N/A'}, "
                                f"out[-1] value={out[-1] if len(out) > 0 else 'N/A'}")
                 
