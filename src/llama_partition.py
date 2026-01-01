@@ -630,6 +630,34 @@ class Stage0(nn.Module):
                         f"min={input_min:.4f}, max={input_max:.4f}, mean={input_mean:.4f}, std={input_std:.4f}, "
                         f"position_ids={layer_pos.tolist() if layer_pos is not None else None}"
                     )
+                    
+                    # Layer 1의 가중치 확인 (활성화값 폭발 원인 파악)
+                    if isinstance(layer, OptimizedLlamaDecoderLayer):
+                        layer_sd = layer.state_dict()
+                        weight_keys = [
+                            'self_attn.q_proj.weight', 'self_attn.k_proj.weight', 'self_attn.v_proj.weight',
+                            'self_attn.o_proj.weight', 'mlp.gate_proj.weight', 'mlp.up_proj.weight', 'mlp.down_proj.weight',
+                            'input_layernorm.weight', 'post_attention_layernorm.weight'
+                        ]
+                        for key in weight_keys:
+                            if key in layer_sd:
+                                w = layer_sd[key]
+                                w_min, w_max = w.min().item(), w.max().item()
+                                w_mean, w_std = w.mean().item(), w.std().item()
+                                w_abs_max = w.abs().max().item()
+                                
+                                # 비정상적으로 큰 가중치 확인
+                                if w_abs_max > 10.0:
+                                    logger.error(
+                                        f"Stage0: Prefill - Layer {i} {key} has LARGE weights: "
+                                        f"abs_max={w_abs_max:.4f}, min={w_min:.4f}, max={w_max:.4f}, "
+                                        f"mean={w_mean:.4f}, std={w_std:.4f}"
+                                    )
+                                else:
+                                    logger.debug(
+                                        f"Stage0: Prefill - Layer {i} {key} OK: "
+                                        f"abs_max={w_abs_max:.4f}, min={w_min:.4f}, max={w_max:.4f}"
+                                    )
             
             out = layer(
                 x,
