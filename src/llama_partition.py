@@ -704,10 +704,43 @@ class Stage0(nn.Module):
                     f"mean={x_after_post_norm.mean().item():.4f}, std={x_after_post_norm.std().item():.4f}"
                 )
                 
-                # 5. MLP
-                x_after_mlp = layer.mlp(x_after_post_norm)
+                # 5. MLP (단계별 추적)
+                mlp_input = x_after_post_norm
                 logger.info(
-                    f"Stage0: Prefill - Layer {i} after MLP: "
+                    f"Stage0: Prefill - Layer {i} MLP input: "
+                    f"min={mlp_input.min().item():.4f}, max={mlp_input.max().item():.4f}, "
+                    f"mean={mlp_input.mean().item():.4f}, std={mlp_input.std().item():.4f}"
+                )
+                
+                # MLP 내부 단계 추적
+                # gate_proj
+                gate_out = layer.mlp.gate_proj(mlp_input)
+                logger.info(
+                    f"Stage0: Prefill - Layer {i} after gate_proj: "
+                    f"min={gate_out.min().item():.4f}, max={gate_out.max().item():.4f}, "
+                    f"mean={gate_out.mean().item():.4f}, std={gate_out.std().item():.4f}"
+                )
+                
+                # up_proj
+                up_out = layer.mlp.up_proj(mlp_input)
+                logger.info(
+                    f"Stage0: Prefill - Layer {i} after up_proj: "
+                    f"min={up_out.min().item():.4f}, max={up_out.max().item():.4f}, "
+                    f"mean={up_out.mean().item():.4f}, std={up_out.std().item():.4f}"
+                )
+                
+                # activation (SiLU)
+                activated = torch.nn.functional.silu(gate_out) * up_out
+                logger.info(
+                    f"Stage0: Prefill - Layer {i} after activation (SiLU * up): "
+                    f"min={activated.min().item():.4f}, max={activated.max().item():.4f}, "
+                    f"mean={activated.mean().item():.4f}, std={activated.std().item():.4f}"
+                )
+                
+                # down_proj
+                x_after_mlp = layer.mlp.down_proj(activated)
+                logger.info(
+                    f"Stage0: Prefill - Layer {i} after down_proj (MLP output): "
                     f"min={x_after_mlp.min().item():.4f}, max={x_after_mlp.max().item():.4f}, "
                     f"mean={x_after_mlp.mean().item():.4f}, std={x_after_mlp.std().item():.4f}"
                 )
