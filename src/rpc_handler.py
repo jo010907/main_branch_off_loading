@@ -239,7 +239,7 @@ class StageConnectionHandler(ConnectionHandler):
             hidden_out = outputs
             # 디버깅: hidden states shape 및 통계 확인
             logger.info(f"[{session_id[:8]}] Stage output: {hidden_out.shape}, input: {hidden_states.shape}")
-            logger.debug(f"[{session_id[:8]}] Hidden stats: min={hidden_out.min().item():.4f}, max={hidden_out.max().item():.4f}, mean={hidden_out.mean().item():.4f}, std={hidden_out.std().item():.4f}")
+            logger.info(f"[{session_id[:8]}] Hidden stats: min={hidden_out.min().item():.4f}, max={hidden_out.max().item():.4f}, mean={hidden_out.mean().item():.4f}, std={hidden_out.std().item():.4f}")
             serialized_hidden = serialize_torch_tensor(hidden_out.cpu())
             response_metadata = {"session_id": session_id}
             return runtime_pb2.ExpertResponse(
