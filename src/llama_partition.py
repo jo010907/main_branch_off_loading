@@ -715,27 +715,52 @@ class Stage0(nn.Module):
                 # MLP 내부 단계 추적
                 # gate_proj
                 gate_out = layer.mlp.gate_proj(mlp_input)
+                gate_max = gate_out.max().item()
+                gate_min = gate_out.min().item()
                 logger.info(
                     f"Stage0: Prefill - Layer {i} after gate_proj: "
-                    f"min={gate_out.min().item():.4f}, max={gate_out.max().item():.4f}, "
+                    f"min={gate_min:.4f}, max={gate_max:.4f}, "
                     f"mean={gate_out.mean().item():.4f}, std={gate_out.std().item():.4f}"
                 )
                 
                 # up_proj
                 up_out = layer.mlp.up_proj(mlp_input)
+                up_max = up_out.max().item()
+                up_min = up_out.min().item()
                 logger.info(
                     f"Stage0: Prefill - Layer {i} after up_proj: "
-                    f"min={up_out.min().item():.4f}, max={up_out.max().item():.4f}, "
+                    f"min={up_min:.4f}, max={up_max:.4f}, "
                     f"mean={up_out.mean().item():.4f}, std={up_out.std().item():.4f}"
                 )
                 
-                # activation (SiLU)
-                activated = torch.nn.functional.silu(gate_out) * up_out
+                # SiLU 계산 확인
+                silu_gate = torch.nn.functional.silu(gate_out)
+                silu_max = silu_gate.max().item()
+                silu_min = silu_gate.min().item()
+                logger.info(
+                    f"Stage0: Prefill - Layer {i} after SiLU(gate): "
+                    f"min={silu_min:.4f}, max={silu_max:.4f}, "
+                    f"mean={silu_gate.mean().item():.4f}, std={silu_gate.std().item():.4f}"
+                )
+                
+                # activation (SiLU * up)
+                activated = silu_gate * up_out
+                activated_max = activated.max().item()
+                activated_min = activated.min().item()
                 logger.info(
                     f"Stage0: Prefill - Layer {i} after activation (SiLU * up): "
-                    f"min={activated.min().item():.4f}, max={activated.max().item():.4f}, "
-                    f"mean={activated.mean().item():.4f}, std={activated.std().item():.4f}"
+                    f"min={activated_min:.4f}, max={activated_max:.4f}, "
+                    f"mean={activated.mean().item():.4f}, std={activated.std().item():.4f}, "
+                    f"expected_max≈{silu_max * up_max:.4f}"
                 )
+                
+                # 예상값과 실제값 비교
+                if abs(activated_max - silu_max * up_max) > 10.0:
+                    logger.error(
+                        f"Stage0: Prefill - Layer {i} activation overflow detected! "
+                        f"SiLU_max={silu_max:.4f}, up_max={up_max:.4f}, "
+                        f"expected_max≈{silu_max * up_max:.4f}, actual_max={activated_max:.4f}"
+                    )
                 
                 # down_proj
                 x_after_mlp = layer.mlp.down_proj(activated)
