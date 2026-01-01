@@ -378,11 +378,21 @@ def _convert_layers(raw_layers: nn.ModuleList, config, device=None, dtype=None, 
                                 if not torch.equal(orig_val_cpu, opt_val_cpu):
                                     # opt_rotary의 device로 이동하여 복사
                                     target_device = opt_val.device
-                                    # load_state_dict를 사용하여 복사 (더 안전함)
-                                    opt_rotary.load_state_dict({key: orig_val.to(target_device)}, strict=False)
-                                    logger.info(f"Layer {idx}: Copied rotary_emb.{key} via load_state_dict (device: {target_device})")
+                                    # buffer를 직접 복사 (register_buffer로 등록된 buffer는 직접 복사가 더 안전함)
+                                    opt_buffer = getattr(opt_rotary, key)
+                                    with torch.no_grad():
+                                        opt_buffer.data.copy_(orig_val.to(target_device).data)
+                                    logger.info(f"Layer {idx}: Copied rotary_emb.{key} directly (device: {target_device})")
+                                    
+                                    # 즉시 검증
+                                    opt_val_after = getattr(opt_rotary, key).cpu()
+                                    if torch.equal(orig_val_cpu, opt_val_after):
+                                        logger.info(f"Layer {idx}: ✓ rotary_emb.{key} verified immediately after copy")
+                                    else:
+                                        diff = (orig_val_cpu - opt_val_after).abs().max().item()
+                                        logger.error(f"Layer {idx}: ✗ rotary_emb.{key} still mismatched! diff={diff:.8f}")
                             
-                            # 복사 후 검증
+                            # 복사 후 최종 검증
                             opt_rotary_sd_after = opt_rotary.state_dict()
                             all_match = True
                             for key in common_keys:
@@ -390,8 +400,21 @@ def _convert_layers(raw_layers: nn.ModuleList, config, device=None, dtype=None, 
                                 opt_val_after = opt_rotary_sd_after[key].cpu()
                                 if not torch.equal(orig_val, opt_val_after):
                                     diff = (orig_val - opt_val_after).abs().max().item()
-                                    logger.error(f"Layer {idx}: ✗ rotary_emb.{key} still mismatched after copy! diff={diff:.8f}")
-                                    all_match = False
+                                    logger.error(f"Layer {idx}: ✗ rotary_emb.{key} still mismatched in final check! diff={diff:.8f}")
+                                    # 한 번 더 시도
+                                    opt_buffer = getattr(opt_rotary, key)
+                                    with torch.no_grad():
+                                        opt_buffer.data.copy_(orig_val.to(opt_buffer.device).data)
+                                    logger.warning(f"Layer {idx}: Retried copying rotary_emb.{key}")
+                                    # 재검증
+                                    opt_val_retry = getattr(opt_rotary, key).cpu()
+                                    if torch.equal(orig_val, opt_val_retry):
+                                        logger.info(f"Layer {idx}: ✓ rotary_emb.{key} verified after retry")
+                                        all_match = True
+                                    else:
+                                        diff_retry = (orig_val - opt_val_retry).abs().max().item()
+                                        logger.error(f"Layer {idx}: ✗ rotary_emb.{key} still failed after retry! diff={diff_retry:.8f}")
+                                        all_match = False
                             
                             if all_match:
                                 logger.info(f"Layer {idx}: ✓ All rotary_emb buffers verified after copy")
@@ -421,7 +444,7 @@ def _convert_layers(raw_layers: nn.ModuleList, config, device=None, dtype=None, 
                             else:
                                 logger.warning(f"Layer {idx}: Rotary buffer {buffer_name} not found in optimized layer")
             
-            # 6. 가중치 검증 (모든 가중치 비교)
+            # 7. 가중치 검증 (모든 가중치 비교)
             opt_state_dict = opt_layer.state_dict()
             key_checks = [
                 'self_attn.q_proj.weight', 'self_attn.k_proj.weight', 'self_attn.v_proj.weight',
