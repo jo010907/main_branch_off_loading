@@ -43,14 +43,19 @@ class Stage0(nn.Module):
         # Convert to OptimizedLlamaDecoderLayer if available
         if OPTIMIZED_LAYER_AVAILABLE:
             optimized_layers = []
-            for layer in raw_layers:
+            for i, layer in enumerate(raw_layers):
                 if isinstance(layer, OptimizedLlamaDecoderLayer):
                     optimized_layers.append(layer)
                 elif isinstance(layer, LlamaDecoderLayer):
                     # Create OptimizedLlamaDecoderLayer and copy weights
                     opt_layer = OptimizedLlamaDecoderLayer(full.config)
-                    opt_layer.load_state_dict(layer.state_dict(), strict=False)
+                    missing_keys, unexpected_keys = opt_layer.load_state_dict(layer.state_dict(), strict=False)
                     optimized_layers.append(opt_layer)
+                    # 디버깅: 가중치 복사 확인
+                    if missing_keys or unexpected_keys:
+                        logger.warning(f"Stage0 layer {i}: missing_keys={len(missing_keys)}, unexpected_keys={len(unexpected_keys)}")
+                    else:
+                        logger.debug(f"Stage0 layer {i}: Successfully converted to OptimizedLlamaDecoderLayer")
                 else:
                     optimized_layers.append(layer)
             self.layers = nn.ModuleList(optimized_layers)
@@ -123,14 +128,19 @@ class StageSegment(nn.Module):
         # Convert to OptimizedLlamaDecoderLayer if available
         if OPTIMIZED_LAYER_AVAILABLE:
             optimized_layers = []
-            for layer in raw_layers:
+            for i, layer in enumerate(raw_layers):
                 if isinstance(layer, OptimizedLlamaDecoderLayer):
                     optimized_layers.append(layer)
                 elif isinstance(layer, LlamaDecoderLayer):
                     # Create OptimizedLlamaDecoderLayer and copy weights
                     opt_layer = OptimizedLlamaDecoderLayer(full.config)
-                    opt_layer.load_state_dict(layer.state_dict(), strict=False)
+                    missing_keys, unexpected_keys = opt_layer.load_state_dict(layer.state_dict(), strict=False)
                     optimized_layers.append(opt_layer)
+                    # 디버깅: 가중치 복사 확인
+                    if missing_keys or unexpected_keys:
+                        logger.warning(f"StageSegment layer {i}: missing_keys={len(missing_keys)}, unexpected_keys={len(unexpected_keys)}")
+                    else:
+                        logger.debug(f"StageSegment layer {i}: Successfully converted to OptimizedLlamaDecoderLayer")
                 else:
                     optimized_layers.append(layer)
             self.layers = nn.ModuleList(optimized_layers)
@@ -204,14 +214,19 @@ class StageLast(nn.Module):
         # Convert to OptimizedLlamaDecoderLayer if available
         if OPTIMIZED_LAYER_AVAILABLE:
             optimized_layers = []
-            for layer in raw_layers:
+            for i, layer in enumerate(raw_layers):
                 if isinstance(layer, OptimizedLlamaDecoderLayer):
                     optimized_layers.append(layer)
                 elif isinstance(layer, LlamaDecoderLayer):
                     # Create OptimizedLlamaDecoderLayer and copy weights
                     opt_layer = OptimizedLlamaDecoderLayer(full.config)
-                    opt_layer.load_state_dict(layer.state_dict(), strict=False)
+                    missing_keys, unexpected_keys = opt_layer.load_state_dict(layer.state_dict(), strict=False)
                     optimized_layers.append(opt_layer)
+                    # 디버깅: 가중치 복사 확인
+                    if missing_keys or unexpected_keys:
+                        logger.warning(f"StageLast layer {i}: missing_keys={len(missing_keys)}, unexpected_keys={len(unexpected_keys)}")
+                    else:
+                        logger.debug(f"StageLast layer {i}: Successfully converted to OptimizedLlamaDecoderLayer")
                 else:
                     optimized_layers.append(layer)
             self.layers = nn.ModuleList(optimized_layers)

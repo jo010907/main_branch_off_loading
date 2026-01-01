@@ -203,7 +203,8 @@ class StageConnectionHandler(ConnectionHandler):
 
         if self.final_stage:
             logits = outputs
-            # 마지막 토큰의 logits만 사용
+            # 디버깅: logits 값 확인
+            logger.info(f"[{session_id[:8]}] Final stage logits: shape={logits.shape}, min={logits.min().item():.2f}, max={logits.max().item():.2f}, mean={logits.mean().item():.2f}")
             # logits shape: [batch, seq_len, vocab_size] 또는 [batch, vocab_size]
             if logits.dim() == 3:
                 # [batch, seq_len, vocab_size] -> [batch, vocab_size] (마지막 토큰)
@@ -213,6 +214,11 @@ class StageConnectionHandler(ConnectionHandler):
                 next_token_logits = logits
             else:
                 raise ValueError(f"Unexpected logits shape: {logits.shape}")
+            
+            # 디버깅: 샘플링 전 top5 logits 확인
+            top5_logits, top5_indices = next_token_logits.topk(5, dim=-1)
+            logger.info(f"[{session_id[:8]}] Top5 logits before sampling: indices={top5_indices[0].tolist()}, values={[f'{v:.2f}' for v in top5_logits[0].tolist()]}")
+            
             next_token_id = int(self._sample_token(
                 next_token_logits, 
                 temperature, 
