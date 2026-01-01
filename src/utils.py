@@ -46,3 +46,19 @@ def default_position_ids(layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]]
         if layer_past[0] is not None and layer_past[0].dim() >= 3:
             past_len = layer_past[0].shape[2]
     return torch.arange(past_len, past_len + seq_len, device=device, dtype=torch.long).unsqueeze(0)
+
+
+def normalize_cache(past):
+    """
+    Convert transformers Cache/DynamicCache to legacy tuple if needed.
+    """
+    try:
+        from transformers.cache_utils import Cache  # type: ignore
+    except Exception:
+        Cache = None
+    if Cache is not None and isinstance(past, Cache):
+        try:
+            return past.to_legacy_cache()
+        except Exception:
+            return past
+    return past
