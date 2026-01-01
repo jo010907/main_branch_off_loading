@@ -23,6 +23,60 @@ except ImportError as e:
 from .utils import extract_kv_tuple, default_position_ids
 
 
+class LlamaDecoderLayerWrapper(nn.Module):
+    """Wrapper for LlamaDecoderLayer to ensure past_key_value is returned."""
+    
+    def __init__(self, layer: LlamaDecoderLayer):
+        super().__init__()
+        self.layer = layer
+    
+    def forward(self, *args, **kwargs):
+        out = self.layer(*args, **kwargs)
+        use_cache = kwargs.get('use_cache', False)
+        
+        # 기본 LlamaDecoderLayer는 past_key_value를 반환하지 않을 수 있으므로
+        # self_attn의 출력에서 직접 추출
+        if use_cache and (len(out) < 2 or out[1] is None):
+            # self_attn을 직접 호출하여 past_key_value 가져오기
+            hidden_states = args[0] if args else kwargs.get('hidden_states')
+            attention_mask = kwargs.get('attention_mask')
+            position_ids = kwargs.get('position_ids')
+            past_key_value = kwargs.get('past_key_value')
+            output_attentions = kwargs.get('output_attentions', False)
+            
+            # input_layernorm
+            residual = hidden_states
+            hidden_states = self.layer.input_layernorm(hidden_states)
+            
+            # self_attn 호출하여 past_key_value 가져오기
+            attn_out = self.layer.self_attn(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_value=past_key_value,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+            )
+            hidden_states, self_attn_weights, present_key_value = attn_out
+            hidden_states = residual + hidden_states
+            
+            # MLP
+            residual = hidden_states
+            hidden_states = self.layer.post_attention_layernorm(hidden_states)
+            hidden_states = self.layer.mlp(hidden_states)
+            hidden_states = residual + hidden_states
+            
+            # 출력 구성
+            outputs = (hidden_states,)
+            if output_attentions:
+                outputs += (self_attn_weights,)
+            if use_cache:
+                outputs += (present_key_value,)
+            return outputs
+        
+        return out
+
+
 class Stage0(nn.Module):
     """LLaMA-only Stage0 using tuple KV cache."""
 
@@ -83,7 +137,14 @@ class Stage0(nn.Module):
                     optimized_layers.append(layer)
             self.layers = nn.ModuleList(optimized_layers)
         else:
-            self.layers = nn.ModuleList(raw_layers)
+            # 기본 LlamaDecoderLayer를 래핑하여 past_key_value 반환 보장
+            wrapped_layers = []
+            for layer in raw_layers:
+                if isinstance(layer, LlamaDecoderLayer) and not isinstance(layer, LlamaDecoderLayerWrapper):
+                    wrapped_layers.append(LlamaDecoderLayerWrapper(layer))
+                else:
+                    wrapped_layers.append(layer)
+            self.layers = nn.ModuleList(wrapped_layers)
         self.config = full.config
 
     def forward(
@@ -205,7 +266,14 @@ class StageSegment(nn.Module):
                     optimized_layers.append(layer)
             self.layers = nn.ModuleList(optimized_layers)
         else:
-            self.layers = nn.ModuleList(raw_layers)
+            # 기본 LlamaDecoderLayer를 래핑하여 past_key_value 반환 보장
+            wrapped_layers = []
+            for layer in raw_layers:
+                if isinstance(layer, LlamaDecoderLayer) and not isinstance(layer, LlamaDecoderLayerWrapper):
+                    wrapped_layers.append(LlamaDecoderLayerWrapper(layer))
+                else:
+                    wrapped_layers.append(layer)
+            self.layers = nn.ModuleList(wrapped_layers)
         self.config = full.config
 
     def forward(
@@ -239,13 +307,6 @@ class StageSegment(nn.Module):
                     kv = kv_candidate[i] if hasattr(kv_candidate, "__getitem__") else None
                 else:
                     kv = extract_kv_tuple(out, layer_idx=i)
-                
-                # 기본 LlamaDecoderLayer는 past_key_value를 반환하지 않을 수 있으므로
-                # attention 모듈에서 직접 가져오기 시도
-                if kv is None and hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'past_key_value'):
-                    attn_past = layer.self_attn.past_key_value
-                    if attn_past is not None:
-                        kv = attn_past
                 
                 new_cache.append(kv)
 
@@ -320,7 +381,14 @@ class StageLast(nn.Module):
                     optimized_layers.append(layer)
             self.layers = nn.ModuleList(optimized_layers)
         else:
-            self.layers = nn.ModuleList(raw_layers)
+            # 기본 LlamaDecoderLayer를 래핑하여 past_key_value 반환 보장
+            wrapped_layers = []
+            for layer in raw_layers:
+                if isinstance(layer, LlamaDecoderLayer) and not isinstance(layer, LlamaDecoderLayerWrapper):
+                    wrapped_layers.append(LlamaDecoderLayerWrapper(layer))
+                else:
+                    wrapped_layers.append(layer)
+            self.layers = nn.ModuleList(wrapped_layers)
 
         self.lm_head = full.lm_head
         self.config = full.config
