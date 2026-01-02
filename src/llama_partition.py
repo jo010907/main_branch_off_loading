@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM
-from transformers.models.llama.modeling_llama import LlamaDecoderLayer
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer, apply_rotary_pos_emb
 try:
     from transformers.cache_utils import Cache  # type: ignore
 except Exception:
@@ -41,17 +41,39 @@ class LlamaDecoderLayerWrapper(nn.Module):
             output_attentions=output_attentions,
             use_cache=True,  # force cache
         )
-        if use_cache:
-            if len(outputs) < 2:
-                raise ValueError("LlamaDecoderLayerWrapper: outputs missing present_key_value")
-            present = outputs[2] if (output_attentions and len(outputs) > 2) else outputs[1]
-            if present is None:
-                logger.warning("LlamaDecoderLayerWrapper: present_key_value is None, falling back to past_key_value")
-                present = past_key_value
-            if output_attentions:
-                return outputs[0], outputs[1], present
-            return outputs[0], present
-        return outputs
+        if not use_cache:
+            return outputs
+
+        hidden_out = outputs[0]
+        present = None
+        if output_attentions and len(outputs) > 2:
+            present = outputs[2]
+        elif len(outputs) > 1:
+            present = outputs[1]
+
+        if present is None:
+            # Recompute KV manually as a fallback
+            attn = self.layer.self_attn
+            bsz, q_len, _ = hidden_states.size()
+            query_states = attn.q_proj(hidden_states)
+            key_states = attn.k_proj(hidden_states)
+            value_states = attn.v_proj(hidden_states)
+            query_states = query_states.view(bsz, q_len, attn.num_heads, attn.head_dim).transpose(1, 2)
+            key_states = key_states.view(bsz, q_len, attn.num_key_value_heads, attn.head_dim).transpose(1, 2)
+            value_states = value_states.view(bsz, q_len, attn.num_key_value_heads, attn.head_dim).transpose(1, 2)
+            cos, sin = attn.rotary_emb(value_states, position_ids)
+            cos, sin = cos.unsqueeze(1), sin.unsqueeze(1)
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+            if past_key_value is not None:
+                key_states = torch.cat([past_key_value[0], key_states], dim=2)
+                value_states = torch.cat([past_key_value[1], value_states], dim=2)
+            present = (key_states, value_states)
+            logger.warning("LlamaDecoderLayerWrapper: present_key_value was None; recomputed manually.")
+
+        if output_attentions:
+            attn_weights = outputs[1] if len(outputs) > 1 else None
+            return hidden_out, attn_weights, present
+        return hidden_out, present
 
 
 def _convert_layers(raw_layers: nn.ModuleList) -> nn.ModuleList:
