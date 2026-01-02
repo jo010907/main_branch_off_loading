@@ -6,9 +6,9 @@ import torch.nn as nn
 from transformers import AutoModelForCausalLM
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer, apply_rotary_pos_emb
 try:
-    from transformers.cache_utils import Cache  # type: ignore
+    from transformers.cache_utils import Cache, DynamicCache  # type: ignore
 except Exception:
-    Cache = None
+    Cache, DynamicCache = None, None
 
 from .utils import extract_kv_tuple, default_position_ids
 
@@ -33,11 +33,24 @@ class LlamaDecoderLayerWrapper(nn.Module):
         output_attentions: bool = False,
         use_cache: bool = True,
     ):
+        # Normalize past to new-style cache to avoid .update errors
+        cache_input = past_key_value
+        if (
+            past_key_value is not None
+            and Cache is not None
+            and DynamicCache is not None
+            and not isinstance(past_key_value, Cache)
+        ):
+            try:
+                cache_input = DynamicCache.from_legacy_cache(past_key_value)
+            except Exception:
+                cache_input = past_key_value
+
         outputs = self.layer(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            past_key_value=past_key_value,
+            past_key_value=cache_input,
             output_attentions=output_attentions,
             use_cache=True,  # force cache
         )
