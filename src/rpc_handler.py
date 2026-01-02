@@ -171,9 +171,17 @@ class StageConnectionHandler(ConnectionHandler):
         repetition_penalty = float(metadata.get("repetition_penalty", 1.5))  # 기본값 증가
         generated_tokens = metadata.get("generated_tokens", [])
 
+        # ========== PREFILL vs DECODE 구분 로그 ==========
+        stage_name = "PREFILL" if is_prefill else "DECODE"
+        logger.info(f"[{session_id[:8]}] ========== {stage_name} ==========")
+        logger.info(f"[{session_id[:8]}] Input hidden_states: shape={hidden_states.shape}, dtype={hidden_states.dtype}, "
+                   f"min={hidden_states.min().item():.4f}, max={hidden_states.max().item():.4f}, "
+                   f"mean={hidden_states.mean().item():.4f}, std={hidden_states.std().item():.4f}")
+        
         if is_prefill:
             past_key_values = None
             past_len = 0
+            logger.info(f"[{session_id[:8]}] PREFILL: seq_len={seq_len}, cur_len={cur_len}, past_len=0 (no cache)")
         else:
             past_key_values = self._kv_cache.get(session_id)
             if past_key_values is None:
@@ -194,33 +202,32 @@ class StageConnectionHandler(ConnectionHandler):
                     except Exception:
                         cache_len = "error"
                 logger.warning(
-                    f"[{session_id[:8]}] Past len mismatch: past_len={past_len}, cur_len={cur_len}, "
+                    f"[{session_id[:8]}] DECODE: Past len mismatch! past_len={past_len}, cur_len={cur_len}, "
                     f"hidden_shape={hidden_states.shape[1]}, expected={expected_past_len}, "
                     f"pkv_type={pkv_type}, cache_len={cache_len}"
                 )
             else:
                 logger.info(
-                    f"[{session_id[:8]}] Decode step: past_len={past_len}, cur_len={cur_len}, "
+                    f"[{session_id[:8]}] DECODE: seq_len={seq_len}, cur_len={cur_len}, past_len={past_len}, "
                     f"hidden_shape={hidden_states.shape}"
                 )
 
         attn_mask, pos_ids = self._build_masks(seq_len, cur_len, is_prefill, hidden_states, past_len)
         
-        # 디버깅: position IDs 확인 (INFO 레벨로 변경)
-        if not is_prefill:
-            logger.info(
-                f"[{session_id[:8]}] Position IDs: {pos_ids.tolist()}, past_len={past_len}"
-            )
+        # Position IDs 로그
+        logger.info(f"[{session_id[:8]}] {stage_name}: Position IDs={pos_ids.tolist()}, past_len={past_len}")
 
         with torch.inference_mode():
             cfg_dtype = getattr(getattr(self.stage_model, "config", None), "torch_dtype", None)
             first_param = next(self.stage_model.parameters(), None)
             model_dtype = cfg_dtype or (first_param.dtype if first_param is not None else hidden_states.dtype)
             inputs = hidden_states.to(self.device, dtype=model_dtype)
+            logger.info(f"[{session_id[:8]}] {stage_name}: Converted inputs dtype={inputs.dtype} (model_dtype={model_dtype})")
             
             # Convert past_key_values to match model dtype and device
             if past_key_values is not None:
                 past_key_values = self._convert_cache_dtype(past_key_values, model_dtype, self.device)
+                logger.info(f"[{session_id[:8]}] {stage_name}: Converted past_key_values to dtype={model_dtype}")
             
             try:
                 outputs, new_past = self.stage_model(
@@ -242,8 +249,9 @@ class StageConnectionHandler(ConnectionHandler):
 
         if self.final_stage:
             logits = outputs
-            # 디버깅: logits 값 확인
-            logger.info(f"[{session_id[:8]}] Final stage logits: shape={logits.shape}, min={logits.min().item():.2f}, max={logits.max().item():.2f}, mean={logits.mean().item():.2f}")
+            # ========== FINAL STAGE (Stage3) 로그 ==========
+            logger.info(f"[{session_id[:8]}] {stage_name} [FINAL]: logits shape={logits.shape}, dtype={logits.dtype}, "
+                       f"min={logits.min().item():.2f}, max={logits.max().item():.2f}, mean={logits.mean().item():.2f}, std={logits.std().item():.2f}")
             # logits shape: [batch, seq_len, vocab_size] 또는 [batch, vocab_size]
             if logits.dim() == 3:
                 # [batch, seq_len, vocab_size] -> [batch, vocab_size] (마지막 토큰)
@@ -256,7 +264,8 @@ class StageConnectionHandler(ConnectionHandler):
             
             # 디버깅: 샘플링 전 top5 logits 확인
             top5_logits, top5_indices = next_token_logits.topk(5, dim=-1)
-            logger.info(f"[{session_id[:8]}] Top5 logits before sampling: indices={top5_indices[0].tolist()}, values={[f'{v:.2f}' for v in top5_logits[0].tolist()]}")
+            logger.info(f"[{session_id[:8]}] {stage_name} [FINAL]: Top5 logits before sampling: "
+                       f"indices={top5_indices[0].tolist()}, values={[f'{v:.2f}' for v in top5_logits[0].tolist()]}")
             
             next_token_id = int(self._sample_token(
                 next_token_logits, 
@@ -266,7 +275,7 @@ class StageConnectionHandler(ConnectionHandler):
                 repetition_penalty=repetition_penalty,
                 generated_tokens=generated_tokens
             ))
-            logger.info(f"[{session_id[:8]}] Sampled token: {next_token_id}, logits shape: {next_token_logits.shape}")
+            logger.info(f"[{session_id[:8]}] {stage_name} [FINAL]: Sampled token={next_token_id}, logits shape={next_token_logits.shape}")
             response_metadata = {"token_id": next_token_id, "session_id": session_id}
             token_tensor = torch.tensor([[next_token_id]], device=self.device, dtype=torch.long)
             serialized_token = serialize_torch_tensor(token_tensor.cpu())
@@ -276,9 +285,16 @@ class StageConnectionHandler(ConnectionHandler):
             )
         else:
             hidden_out = outputs
-            # 디버깅: hidden states shape 및 통계 확인
-            logger.info(f"[{session_id[:8]}] Stage output: {hidden_out.shape}, input: {hidden_states.shape}")
-            logger.info(f"[{session_id[:8]}] Hidden stats: min={hidden_out.min().item():.4f}, max={hidden_out.max().item():.4f}, mean={hidden_out.mean().item():.4f}, std={hidden_out.std().item():.4f}")
+            # ========== INTERMEDIATE STAGE (Stage1, Stage2) 로그 ==========
+            logger.info(f"[{session_id[:8]}] {stage_name} [INTERMEDIATE]: output shape={hidden_out.shape}, input shape={hidden_states.shape}")
+            logger.info(f"[{session_id[:8]}] {stage_name} [INTERMEDIATE]: output stats - "
+                       f"min={hidden_out.min().item():.4f}, max={hidden_out.max().item():.4f}, "
+                       f"mean={hidden_out.mean().item():.4f}, std={hidden_out.std().item():.4f}, dtype={hidden_out.dtype}")
+            
+            # 활성화값 폭발 감지
+            if abs(hidden_out.min().item()) > 100 or abs(hidden_out.max().item()) > 100:
+                logger.warning(f"[{session_id[:8]}] {stage_name} [INTERMEDIATE]: ⚠️ Large activation values detected! "
+                             f"min={hidden_out.min().item():.4f}, max={hidden_out.max().item():.4f}")
             serialized_hidden = serialize_torch_tensor(hidden_out.cpu())
             response_metadata = {"session_id": session_id}
             return runtime_pb2.ExpertResponse(
