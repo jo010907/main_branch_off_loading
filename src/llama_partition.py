@@ -4,18 +4,77 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM
-try:
-    from transformers.cache_utils import Cache  # type: ignore
-except Exception:
-    Cache = None
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
-from .utils import extract_kv_tuple, default_position_ids
+from .utils import default_position_ids
 
 logger = logging.getLogger(__name__)
 
+# Prefer petals optimized block (uses rotary_emb cache) when available
+try:
+    from petals.llama.block import OptimizedLlamaDecoderLayer  # type: ignore
+    OPT_AVAILABLE = True
+except Exception as e:  # pragma: no cover - optional dependency
+    OptimizedLlamaDecoderLayer = None
+    OPT_AVAILABLE = False
+    logger.warning(f"OptimizedLlamaDecoderLayer not available ({e}), using vanilla LlamaDecoderLayer.")
+
+try:
+    from transformers.cache_utils import Cache, DynamicCache  # type: ignore
+except Exception:
+    Cache, DynamicCache = None, None
+
+
+def _convert_layers(raw_layers: nn.ModuleList, config) -> nn.ModuleList:
+    """
+    Convert HF layers to OptimizedLlamaDecoderLayer if available.
+    Otherwise keep as-is to stay close to HF reference.
+    """
+    converted = []
+    for idx, layer in enumerate(raw_layers):
+        if OPT_AVAILABLE:
+            if isinstance(layer, OptimizedLlamaDecoderLayer):
+                converted.append(layer)
+                continue
+            if isinstance(layer, LlamaDecoderLayer):
+                opt_layer = OptimizedLlamaDecoderLayer(config)
+                missing, unexpected = opt_layer.load_state_dict(layer.state_dict(), strict=False)
+                if missing or unexpected:
+                    logger.warning(
+                        f"Layer {idx}: optimized load missing={len(missing)}, unexpected={len(unexpected)}"
+                    )
+                converted.append(opt_layer)
+                continue
+        converted.append(layer)
+    return nn.ModuleList(converted)
+
+
+def _to_cache(past):
+    """Convert legacy tuple to DynamicCache if available, else return as-is."""
+    if past is None:
+        return None
+    if Cache is not None and isinstance(past, Cache):
+        return past
+    if DynamicCache is not None and isinstance(past, (tuple, list)):
+        try:
+            return DynamicCache.from_legacy_cache(past)
+        except Exception:
+            return past
+    return past
+
+
+def _from_cache(present):
+    """Convert Cache to legacy tuple if needed."""
+    if Cache is not None and isinstance(present, Cache):
+        try:
+            return present.to_legacy_cache()
+        except Exception:
+            return present
+    return present
+
 
 class Stage0(nn.Module):
-    """LLaMA-only Stage0 using HF layers; keep Cache end-to-end."""
+    """LLaMA-only Stage0; keep Cache end-to-end (no manual recompute)."""
 
     def __init__(self, full, end: int):
         super().__init__()
@@ -25,13 +84,15 @@ class Stage0(nn.Module):
 
         if hasattr(full, "model") and hasattr(full.model, "embed_tokens"):
             self.embed_tokens = full.model.embed_tokens
-            self.layers = nn.ModuleList(full.model.layers[:end])
+            raw_layers = full.model.layers[:end]
         elif hasattr(full, "transformer") and hasattr(full.transformer, "wte"):
             self.embed_tokens = full.transformer.wte
             self.pos_embed = getattr(full.transformer, "wpe", None)
-            self.layers = nn.ModuleList(full.transformer.h[:end])
+            raw_layers = full.transformer.h[:end]
         else:
             raise ValueError(f"Unsupported LLaMA architecture: {type(full)}.")
+
+        self.layers = _convert_layers(nn.ModuleList(raw_layers), full.config)
         self.config = full.config
 
     def forward(
@@ -55,30 +116,25 @@ class Stage0(nn.Module):
                 x,
                 attention_mask=None,
                 position_ids=layer_pos,
-                past_key_value=layer_past,
+                past_key_value=_to_cache(layer_past),
                 use_cache=use_cache,
                 output_attentions=False,
             )
             x = out[0]
             if use_cache:
                 present = out[-1] if len(out) > 1 else None
-                if Cache is not None and isinstance(present, Cache):
-                    cache_obj = present
-                else:
-                    kv = extract_kv_tuple(out, layer_idx=i)
-                    tuple_cache.append(kv)
-                    if kv is None:
-                        logger.warning(f"Stage0: layer {i} did not return KV cache")
+                present = _from_cache(present)
+                if present is None:
+                    logger.warning(f"Stage0: layer {i} returned no KV cache")
+                tuple_cache.append(present)
 
         if not use_cache:
             return x, None
-        if cache_obj is not None:
-            return x, cache_obj
         return x, tuple(tuple_cache)
 
 
 class StageSegment(nn.Module):
-    """LLaMA-only middle segment using HF layers; keep Cache end-to-end."""
+    """LLaMA-only middle segment; keep Cache end-to-end."""
 
     def __init__(self, full, start: int, end: int):
         super().__init__()
@@ -87,11 +143,13 @@ class StageSegment(nn.Module):
             raise ValueError("Only LLaMA-style models are supported in StageSegment.")
 
         if hasattr(full, "model") and hasattr(full.model, "layers"):
-            self.layers = nn.ModuleList(full.model.layers[start:end])
+            raw_layers = full.model.layers[start:end]
         elif hasattr(full, "transformer") and hasattr(full.transformer, "h"):
-            self.layers = nn.ModuleList(full.transformer.h[start:end])
+            raw_layers = full.transformer.h[start:end]
         else:
             raise ValueError(f"Unsupported LLaMA architecture: {type(full)}.")
+
+        self.layers = _convert_layers(nn.ModuleList(raw_layers), full.config)
         self.config = full.config
 
     def forward(
@@ -103,7 +161,6 @@ class StageSegment(nn.Module):
         use_cache: bool = True,
     ):
         x = hidden_states
-        cache_obj = None
         tuple_cache = []
 
         for i, layer in enumerate(self.layers):
@@ -115,30 +172,25 @@ class StageSegment(nn.Module):
                 x,
                 attention_mask=None,
                 position_ids=layer_pos,
-                past_key_value=layer_past,
+                past_key_value=_to_cache(layer_past),
                 use_cache=use_cache,
                 output_attentions=False,
             )
             x = out[0]
             if use_cache:
                 present = out[-1] if len(out) > 1 else None
-                if Cache is not None and isinstance(present, Cache):
-                    cache_obj = present
-                else:
-                    kv = extract_kv_tuple(out, layer_idx=i)
-                    tuple_cache.append(kv)
-                    if kv is None:
-                        logger.warning(f"StageSegment: layer {i} did not return KV cache")
+                present = _from_cache(present)
+                if present is None:
+                    logger.warning(f"StageSegment: layer {i} returned no KV cache")
+                tuple_cache.append(present)
 
         if not use_cache:
             return x, None
-        if cache_obj is not None:
-            return x, cache_obj
         return x, tuple(tuple_cache)
 
 
 class StageLast(nn.Module):
-    """LLaMA-only last stage using HF layers; keep Cache end-to-end."""
+    """LLaMA-only last stage; keep Cache end-to-end."""
 
     def __init__(self, full, start: int):
         super().__init__()
@@ -147,7 +199,7 @@ class StageLast(nn.Module):
             raise ValueError("Only LLaMA-style models are supported in StageLast.")
 
         if hasattr(full, "model") and hasattr(full.model, "layers"):
-            self.layers = nn.ModuleList(full.model.layers[start:])
+            raw_layers = full.model.layers[start:]
             if hasattr(full.model, "norm"):
                 self.norm = full.model.norm
             elif hasattr(full.model, "final_layer_norm"):
@@ -155,11 +207,12 @@ class StageLast(nn.Module):
             else:
                 raise ValueError(f"Unsupported model: no norm layer found in {type(full.model)}")
         elif hasattr(full, "transformer") and hasattr(full.transformer, "h"):
-            self.layers = nn.ModuleList(full.transformer.h[start:])
+            raw_layers = full.transformer.h[start:]
             self.norm = full.transformer.ln_f
         else:
             raise ValueError(f"Unsupported LLaMA architecture: {type(full)}.")
 
+        self.layers = _convert_layers(nn.ModuleList(raw_layers), full.config)
         self.lm_head = full.lm_head
         self.config = full.config
 
@@ -172,7 +225,6 @@ class StageLast(nn.Module):
         use_cache: bool = True,
     ):
         x = hidden_states
-        cache_obj = None
         tuple_cache = []
 
         for i, layer in enumerate(self.layers):
@@ -184,27 +236,22 @@ class StageLast(nn.Module):
                 x,
                 attention_mask=None,
                 position_ids=layer_pos,
-                past_key_value=layer_past,
+                past_key_value=_to_cache(layer_past),
                 use_cache=use_cache,
                 output_attentions=False,
             )
             x = out[0]
             if use_cache:
                 present = out[-1] if len(out) > 1 else None
-                if Cache is not None and isinstance(present, Cache):
-                    cache_obj = present
-                else:
-                    kv = extract_kv_tuple(out, layer_idx=i)
-                    tuple_cache.append(kv)
-                    if kv is None:
-                        logger.warning(f"StageLast: layer {i} did not return KV cache")
+                present = _from_cache(present)
+                if present is None:
+                    logger.warning(f"StageLast: layer {i} returned no KV cache")
+                tuple_cache.append(present)
 
         x = self.norm(x)
         logits = self.lm_head(x)
         if not use_cache:
             return logits, None
-        if cache_obj is not None:
-            return logits, cache_obj
         return logits, tuple(tuple_cache)
 
 
