@@ -94,7 +94,7 @@ class Stage0(nn.Module):
 
         self.layers = _convert_layers(nn.ModuleList(raw_layers), full.config)
         self.config = full.config
-        logger.info(f"Stage0 initialized with {len(self.layers)} layers")
+        logger.info(f"Stage0 initialized with {len(self.layers)} layers (end={end})")
 
     def forward(
         self,
@@ -128,11 +128,8 @@ class Stage0(nn.Module):
                 if present is None:
                     logger.warning(f"Stage0: layer {i} returned no KV cache")
                 else:
-                    try:
-                        cache_len = present[0].shape[-2] if isinstance(present, tuple) else "cache_obj"
-                        logger.debug(f"Stage0 layer {i} present cache_len={cache_len}")
-                    except Exception:
-                        pass
+                    cache_len = present[0].shape[-2] if isinstance(present, tuple) else "cache_obj"
+                    logger.info(f"Stage0 layer {i} present cache_len={cache_len}")
                 tuple_cache.append(present)
 
         if not use_cache:
@@ -190,11 +187,8 @@ class StageSegment(nn.Module):
                 if present is None:
                     logger.warning(f"StageSegment: layer {i} returned no KV cache")
                 else:
-                    try:
-                        cache_len = present[0].shape[-2] if isinstance(present, tuple) else "cache_obj"
-                        logger.debug(f"StageSegment layer {i} present cache_len={cache_len}")
-                    except Exception:
-                        pass
+                    cache_len = present[0].shape[-2] if isinstance(present, tuple) else "cache_obj"
+                    logger.info(f"StageSegment layer {i} present cache_len={cache_len}")
                 tuple_cache.append(present)
 
         if not use_cache:
@@ -261,11 +255,8 @@ class StageLast(nn.Module):
                 if present is None:
                     logger.warning(f"StageLast: layer {i} returned no KV cache")
                 else:
-                    try:
-                        cache_len = present[0].shape[-2] if isinstance(present, tuple) else "cache_obj"
-                        logger.debug(f"StageLast layer {i} present cache_len={cache_len}")
-                    except Exception:
-                        pass
+                    cache_len = present[0].shape[-2] if isinstance(present, tuple) else "cache_obj"
+                    logger.info(f"StageLast layer {i} present cache_len={cache_len}")
                 tuple_cache.append(present)
 
         x = self.norm(x)
