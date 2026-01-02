@@ -321,37 +321,37 @@ class StageConnectionHandler(ConnectionHandler):
         topk_vals, topk_ids = last_logits.topk(5, dim=-1)
         logger.info(f"Top5 ids={topk_ids[0].tolist()}, vals={topk_vals[0].tolist()}, temp={temperature}, top_p={top_p}, top_k={top_k}")
         
-        # Repetition penalty 적용 - 더 강하게
-        if repetition_penalty != 1.0 and generated_tokens:
-            # 최근 50개 토큰 체크 (범위 확대)
-            recent_tokens = generated_tokens[-50:] if len(generated_tokens) > 50 else generated_tokens
-            
-            # 각 토큰의 반복 횟수에 따라 패널티 적용
-            token_counts = {}
-            for token_id in recent_tokens:
-                token_counts[token_id] = token_counts.get(token_id, 0) + 1
-            
-            for token_id, count in token_counts.items():
-                if token_id < logits.shape[-1]:
-                    # 반복 횟수에 따라 패널티 증가
-                    penalty = repetition_penalty ** count
-                    if logits[0, token_id] > 0:
-                        logits[0, token_id] /= penalty
-                    else:
-                        logits[0, token_id] *= penalty
-            
-            # 연속 반복 방지 (최근 3개 토큰이 모두 같으면 강한 패널티)
-            if len(generated_tokens) >= 3:
-                last_three = generated_tokens[-3:]
-                if len(set(last_three)) == 1:  # 모두 같은 토큰
-                    repeated_token = last_three[0]
-                    if repeated_token < logits.shape[-1]:
-                        # 매우 강한 패널티
-                        strong_penalty = repetition_penalty ** 3
-                        if logits[0, repeated_token] > 0:
-                            logits[0, repeated_token] /= strong_penalty
-                        else:
-                            logits[0, repeated_token] *= strong_penalty
+        # Repetition penalty 적용 - 주석처리됨
+        # if repetition_penalty != 1.0 and generated_tokens:
+        #     # 최근 50개 토큰 체크 (범위 확대)
+        #     recent_tokens = generated_tokens[-50:] if len(generated_tokens) > 50 else generated_tokens
+        #     
+        #     # 각 토큰의 반복 횟수에 따라 패널티 적용
+        #     token_counts = {}
+        #     for token_id in recent_tokens:
+        #         token_counts[token_id] = token_counts.get(token_id, 0) + 1
+        #     
+        #     for token_id, count in token_counts.items():
+        #         if token_id < logits.shape[-1]:
+        #             # 반복 횟수에 따라 패널티 증가
+        #             penalty = repetition_penalty ** count
+        #             if logits[0, token_id] > 0:
+        #                 logits[0, token_id] /= penalty
+        #             else:
+        #                 logits[0, token_id] *= penalty
+        #     
+        #     # 연속 반복 방지 (최근 3개 토큰이 모두 같으면 강한 패널티)
+        #     if len(generated_tokens) >= 3:
+        #         last_three = generated_tokens[-3:]
+        #         if len(set(last_three)) == 1:  # 모두 같은 토큰
+        #             repeated_token = last_three[0]
+        #             if repeated_token < logits.shape[-1]:
+        #                 # 매우 강한 패널티
+        #                 strong_penalty = repetition_penalty ** 3
+        #                 if logits[0, repeated_token] > 0:
+        #                     logits[0, repeated_token] /= strong_penalty
+        #                 else:
+        #                     logits[0, repeated_token] *= strong_penalty
         
         probs = torch.softmax(logits / temp, dim=-1)
 
