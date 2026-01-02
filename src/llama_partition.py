@@ -94,6 +94,10 @@ class Stage0(nn.Module):
 
         self.layers = _convert_layers(nn.ModuleList(raw_layers), full.config)
         self.config = full.config
+        if len(self.layers) == 0:
+            logger.warning(f"StageSegment initialized with 0 layers (start={start}, end={end})")
+        else:
+            logger.info(f"StageSegment initialized with {len(self.layers)} layers (start={start}, end={end})")
         logger.info(f"Stage0 initialized with {len(self.layers)} layers (end={end})")
 
     def forward(
@@ -322,6 +326,17 @@ def load_stage_model(
         # keep norm/head
     else:
         raise ValueError(f"Unknown role: {role}")
+
+    # Log resulting layer counts to catch empty segments early
+    if hasattr(full, "model") and hasattr(full.model, "layers"):
+        num_layers = len(full.model.layers)
+    elif hasattr(full, "transformer") and hasattr(full.transformer, "h"):
+        num_layers = len(full.transformer.h)
+    else:
+        num_layers = -1
+    logger.info(f"load_stage_model: role={role}, layers={num_layers}, start={start}, end={end}")
+    if num_layers == 0:
+        raise ValueError(f"Pruned model has 0 layers for role={role} (start={start}, end={end}). Check --splits.")
 
     full = full.to(device)
     return full

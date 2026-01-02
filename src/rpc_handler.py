@@ -180,8 +180,9 @@ class StageConnectionHandler(ConnectionHandler):
             )
 
         with torch.inference_mode():
+            cfg_dtype = getattr(getattr(self.stage_model, "config", None), "torch_dtype", None)
             first_param = next(self.stage_model.parameters(), None)
-            model_dtype = first_param.dtype if first_param is not None else hidden_states.dtype
+            model_dtype = cfg_dtype or (first_param.dtype if first_param is not None else hidden_states.dtype)
             inputs = hidden_states.to(self.device, dtype=model_dtype)
             try:
                 outputs, new_past = self.stage_model(
