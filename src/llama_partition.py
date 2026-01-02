@@ -4,104 +4,18 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM
-from transformers.models.llama.modeling_llama import LlamaDecoderLayer, apply_rotary_pos_emb
 try:
-    from transformers.cache_utils import Cache, DynamicCache  # type: ignore
+    from transformers.cache_utils import Cache  # type: ignore
 except Exception:
-    Cache, DynamicCache = None, None
+    Cache = None
 
 from .utils import extract_kv_tuple, default_position_ids
 
 logger = logging.getLogger(__name__)
 
 
-class LlamaDecoderLayerWrapper(nn.Module):
-    """
-    Minimal wrapper to force returning present_key_value when use_cache=True.
-    """
-
-    def __init__(self, layer: nn.Module):
-        super().__init__()
-        self.layer = layer
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.Tensor] = None,
-        past_key_value: Optional[Tuple] = None,
-        output_attentions: bool = False,
-        use_cache: bool = True,
-    ):
-        # Normalize past to new-style cache to avoid .update errors
-        cache_input = past_key_value
-        if (
-            past_key_value is not None
-            and Cache is not None
-            and DynamicCache is not None
-            and not isinstance(past_key_value, Cache)
-        ):
-            try:
-                cache_input = DynamicCache.from_legacy_cache(past_key_value)
-            except Exception:
-                cache_input = past_key_value
-
-        outputs = self.layer(
-            hidden_states=hidden_states,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=cache_input,
-            output_attentions=output_attentions,
-            use_cache=True,  # force cache
-        )
-        if not use_cache:
-            return outputs
-
-        hidden_out = outputs[0]
-        present = None
-        if output_attentions and len(outputs) > 2:
-            present = outputs[2]
-        elif len(outputs) > 1:
-            present = outputs[1]
-
-        if present is None:
-            # Recompute KV manually as a fallback
-            attn = self.layer.self_attn
-            bsz, q_len, _ = hidden_states.size()
-            query_states = attn.q_proj(hidden_states)
-            key_states = attn.k_proj(hidden_states)
-            value_states = attn.v_proj(hidden_states)
-            query_states = query_states.view(bsz, q_len, attn.num_heads, attn.head_dim).transpose(1, 2)
-            key_states = key_states.view(bsz, q_len, attn.num_key_value_heads, attn.head_dim).transpose(1, 2)
-            value_states = value_states.view(bsz, q_len, attn.num_key_value_heads, attn.head_dim).transpose(1, 2)
-            cos, sin = attn.rotary_emb(value_states, position_ids)
-            cos, sin = cos.unsqueeze(1), sin.unsqueeze(1)
-            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
-            if past_key_value is not None:
-                key_states = torch.cat([past_key_value[0], key_states], dim=2)
-                value_states = torch.cat([past_key_value[1], value_states], dim=2)
-            present = (key_states, value_states)
-            logger.warning("LlamaDecoderLayerWrapper: present_key_value was None; recomputed manually.")
-
-        if output_attentions:
-            attn_weights = outputs[1] if len(outputs) > 1 else None
-            return hidden_out, attn_weights, present
-        return hidden_out, present
-
-
-def _convert_layers(raw_layers: nn.ModuleList) -> nn.ModuleList:
-    """Wrap HF layers to ensure KV is returned."""
-    wrapped = []
-    for layer in raw_layers:
-        if isinstance(layer, LlamaDecoderLayer):
-            wrapped.append(LlamaDecoderLayerWrapper(layer))
-        else:
-            wrapped.append(layer)
-    return nn.ModuleList(wrapped)
-
-
 class Stage0(nn.Module):
-    """LLaMA-only Stage0 using tuple KV cache."""
+    """LLaMA-only Stage0 using HF layers; keep Cache end-to-end."""
 
     def __init__(self, full, end: int):
         super().__init__()
@@ -111,15 +25,13 @@ class Stage0(nn.Module):
 
         if hasattr(full, "model") and hasattr(full.model, "embed_tokens"):
             self.embed_tokens = full.model.embed_tokens
-            raw_layers = full.model.layers[:end]
+            self.layers = nn.ModuleList(full.model.layers[:end])
         elif hasattr(full, "transformer") and hasattr(full.transformer, "wte"):
             self.embed_tokens = full.transformer.wte
             self.pos_embed = getattr(full.transformer, "wpe", None)
-            raw_layers = full.transformer.h[:end]
+            self.layers = nn.ModuleList(full.transformer.h[:end])
         else:
             raise ValueError(f"Unsupported LLaMA architecture: {type(full)}.")
-
-        self.layers = _convert_layers(raw_layers)
         self.config = full.config
 
     def forward(
@@ -131,7 +43,8 @@ class Stage0(nn.Module):
         use_cache: bool = True,
     ):
         x = self.embed_tokens(input_ids)
-        new_cache = []
+        cache_obj = None
+        tuple_cache = []
 
         for i, layer in enumerate(self.layers):
             layer_past = None if past_key_values is None else past_key_values[i]
@@ -148,18 +61,24 @@ class Stage0(nn.Module):
             )
             x = out[0]
             if use_cache:
-                kv = extract_kv_tuple(out, layer_idx=i)
-                if kv is None:
-                    logger.warning(f"Stage0: layer {i} did not return KV cache")
-                new_cache.append(kv)
+                present = out[-1] if len(out) > 1 else None
+                if Cache is not None and isinstance(present, Cache):
+                    cache_obj = present
+                else:
+                    kv = extract_kv_tuple(out, layer_idx=i)
+                    tuple_cache.append(kv)
+                    if kv is None:
+                        logger.warning(f"Stage0: layer {i} did not return KV cache")
 
         if not use_cache:
             return x, None
-        return x, tuple(new_cache)
+        if cache_obj is not None:
+            return x, cache_obj
+        return x, tuple(tuple_cache)
 
 
 class StageSegment(nn.Module):
-    """LLaMA-only middle segment using tuple KV cache."""
+    """LLaMA-only middle segment using HF layers; keep Cache end-to-end."""
 
     def __init__(self, full, start: int, end: int):
         super().__init__()
@@ -168,13 +87,11 @@ class StageSegment(nn.Module):
             raise ValueError("Only LLaMA-style models are supported in StageSegment.")
 
         if hasattr(full, "model") and hasattr(full.model, "layers"):
-            raw_layers = full.model.layers[start:end]
+            self.layers = nn.ModuleList(full.model.layers[start:end])
         elif hasattr(full, "transformer") and hasattr(full.transformer, "h"):
-            raw_layers = full.transformer.h[start:end]
+            self.layers = nn.ModuleList(full.transformer.h[start:end])
         else:
             raise ValueError(f"Unsupported LLaMA architecture: {type(full)}.")
-
-        self.layers = _convert_layers(raw_layers)
         self.config = full.config
 
     def forward(
@@ -186,7 +103,8 @@ class StageSegment(nn.Module):
         use_cache: bool = True,
     ):
         x = hidden_states
-        new_cache = []
+        cache_obj = None
+        tuple_cache = []
 
         for i, layer in enumerate(self.layers):
             layer_past = None if past_key_values is None else past_key_values[i]
@@ -203,18 +121,24 @@ class StageSegment(nn.Module):
             )
             x = out[0]
             if use_cache:
-                kv = extract_kv_tuple(out, layer_idx=i)
-                if kv is None:
-                    logger.warning(f"StageSegment: layer {i} did not return KV cache")
-                new_cache.append(kv)
+                present = out[-1] if len(out) > 1 else None
+                if Cache is not None and isinstance(present, Cache):
+                    cache_obj = present
+                else:
+                    kv = extract_kv_tuple(out, layer_idx=i)
+                    tuple_cache.append(kv)
+                    if kv is None:
+                        logger.warning(f"StageSegment: layer {i} did not return KV cache")
 
         if not use_cache:
             return x, None
-        return x, tuple(new_cache)
+        if cache_obj is not None:
+            return x, cache_obj
+        return x, tuple(tuple_cache)
 
 
 class StageLast(nn.Module):
-    """LLaMA-only last stage using tuple KV cache."""
+    """LLaMA-only last stage using HF layers; keep Cache end-to-end."""
 
     def __init__(self, full, start: int):
         super().__init__()
@@ -223,7 +147,7 @@ class StageLast(nn.Module):
             raise ValueError("Only LLaMA-style models are supported in StageLast.")
 
         if hasattr(full, "model") and hasattr(full.model, "layers"):
-            raw_layers = full.model.layers[start:]
+            self.layers = nn.ModuleList(full.model.layers[start:])
             if hasattr(full.model, "norm"):
                 self.norm = full.model.norm
             elif hasattr(full.model, "final_layer_norm"):
@@ -231,12 +155,11 @@ class StageLast(nn.Module):
             else:
                 raise ValueError(f"Unsupported model: no norm layer found in {type(full.model)}")
         elif hasattr(full, "transformer") and hasattr(full.transformer, "h"):
-            raw_layers = full.transformer.h[start:]
+            self.layers = nn.ModuleList(full.transformer.h[start:])
             self.norm = full.transformer.ln_f
         else:
             raise ValueError(f"Unsupported LLaMA architecture: {type(full)}.")
 
-        self.layers = _convert_layers(raw_layers)
         self.lm_head = full.lm_head
         self.config = full.config
 
@@ -249,7 +172,8 @@ class StageLast(nn.Module):
         use_cache: bool = True,
     ):
         x = hidden_states
-        new_cache = []
+        cache_obj = None
+        tuple_cache = []
 
         for i, layer in enumerate(self.layers):
             layer_past = None if past_key_values is None else past_key_values[i]
@@ -266,16 +190,22 @@ class StageLast(nn.Module):
             )
             x = out[0]
             if use_cache:
-                kv = extract_kv_tuple(out, layer_idx=i)
-                if kv is None:
-                    logger.warning(f"StageLast: layer {i} did not return KV cache")
-                new_cache.append(kv)
+                present = out[-1] if len(out) > 1 else None
+                if Cache is not None and isinstance(present, Cache):
+                    cache_obj = present
+                else:
+                    kv = extract_kv_tuple(out, layer_idx=i)
+                    tuple_cache.append(kv)
+                    if kv is None:
+                        logger.warning(f"StageLast: layer {i} did not return KV cache")
 
         x = self.norm(x)
         logits = self.lm_head(x)
         if not use_cache:
             return logits, None
-        return logits, tuple(new_cache)
+        if cache_obj is not None:
+            return logits, cache_obj
+        return logits, tuple(tuple_cache)
 
 
 def load_stage_model(
