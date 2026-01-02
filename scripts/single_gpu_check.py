@@ -28,7 +28,10 @@ with torch.inference_mode():
     last_logits = logits[:, -1, :]      # 마지막 토큰 위치
     topk_vals, topk_ids = last_logits.topk(5, dim=-1)
 
+print(f"Device: {device}, dtype: {logits.dtype}")
+print("Prompt:", prompt)
 print("Top5 ids:", topk_ids[0].tolist())
+print("Top5 tokens:", [tok.decode([i], skip_special_tokens=True) for i in topk_ids[0].tolist()])
 print("Top5 logits:", topk_vals[0].tolist())
 
 # greedy로 한 토큰 생성
