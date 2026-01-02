@@ -84,11 +84,11 @@ class Stage0(nn.Module):
 
         if hasattr(full, "model") and hasattr(full.model, "embed_tokens"):
             self.embed_tokens = full.model.embed_tokens
-            raw_layers = full.model.layers[:end]
+            raw_layers = full.model.layers  # already pruned in load_stage_model
         elif hasattr(full, "transformer") and hasattr(full.transformer, "wte"):
             self.embed_tokens = full.transformer.wte
             self.pos_embed = getattr(full.transformer, "wpe", None)
-            raw_layers = full.transformer.h[:end]
+            raw_layers = full.transformer.h  # already pruned in load_stage_model
         else:
             raise ValueError(f"Unsupported LLaMA architecture: {type(full)}.")
 
@@ -147,9 +147,9 @@ class StageSegment(nn.Module):
             raise ValueError("Only LLaMA-style models are supported in StageSegment.")
 
         if hasattr(full, "model") and hasattr(full.model, "layers"):
-            raw_layers = full.model.layers[start:end]
+            raw_layers = full.model.layers  # already pruned in load_stage_model
         elif hasattr(full, "transformer") and hasattr(full.transformer, "h"):
-            raw_layers = full.transformer.h[start:end]
+            raw_layers = full.transformer.h  # already pruned in load_stage_model
         else:
             raise ValueError(f"Unsupported LLaMA architecture: {type(full)}.")
 
@@ -210,7 +210,7 @@ class StageLast(nn.Module):
             raise ValueError("Only LLaMA-style models are supported in StageLast.")
 
         if hasattr(full, "model") and hasattr(full.model, "layers"):
-            raw_layers = full.model.layers[start:]
+            raw_layers = full.model.layers  # already pruned in load_stage_model
             if hasattr(full.model, "norm"):
                 self.norm = full.model.norm
             elif hasattr(full.model, "final_layer_norm"):
@@ -218,7 +218,7 @@ class StageLast(nn.Module):
             else:
                 raise ValueError(f"Unsupported model: no norm layer found in {type(full.model)}")
         elif hasattr(full, "transformer") and hasattr(full.transformer, "h"):
-            raw_layers = full.transformer.h[start:]
+            raw_layers = full.transformer.h  # already pruned in load_stage_model
             self.norm = full.transformer.ln_f
         else:
             raise ValueError(f"Unsupported LLaMA architecture: {type(full)}.")
