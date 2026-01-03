@@ -133,8 +133,8 @@ def run_rank0(args, device, splits):
     from src.utils import normalize_cache
     hidden, past0 = s0(input_ids, pos, attn, past0, use_cache=True)  # [1, L, H]
     past0 = normalize_cache(past0)
-    logger.info(f"Stage0 prefill: prompt_len={L}, past summary: {_describe_past(past0)}")
-    logger.info(f"Stage0 prefill hidden stats: shape={hidden.shape}, min={hidden.min().item():.4f}, max={hidden.max().item():.4f}, mean={hidden.mean().item():.4f}, std={hidden.std().item():.4f}")
+    # logger.info(f"Stage0 prefill: prompt_len={L}, past summary: {_describe_past(past0)}")
+    # logger.info(f"Stage0 prefill hidden stats: shape={hidden.shape}, min={hidden.min().item():.4f}, max={hidden.max().item():.4f}, mean={hidden.mean().item():.4f}, std={hidden.std().item():.4f}")
 
     session_id = str(uuid4())
     max_length = L + args.max_new_tokens
@@ -173,7 +173,7 @@ def run_rank0(args, device, splits):
             past0 = normalize_cache(past0)
             hidden = hidden_full[:, -1:, :]  # 마지막 토큰 hidden만 사용
             past_len = full_input.shape[1] - 1
-            logger.info(f"Stage0 recompute: total_len={full_input.shape[1]}, past_len={past_len}, hidden_shape={hidden.shape}, past summary: {_describe_past(past0)}")
+            # logger.info(f"Stage0 recompute: total_len={full_input.shape[1]}, past_len={past_len}, hidden_shape={hidden.shape}, past summary: {_describe_past(past0)}")
         else:
             new_input = torch.tensor([[next_id]], device=device, dtype=torch.long)
             if isinstance(past0, (list, tuple)) and isinstance(past0[0], (list, tuple)) and past0[0][0] is not None:
@@ -185,25 +185,25 @@ def run_rank0(args, device, splits):
                 logger.warning(f"Stage0 past tuple missing first entry, fallback past_len={past_len}, past summary: {_describe_past(past0)}")
             attn = None
             pos = torch.tensor([[past_len]], device=device, dtype=torch.long)
-            logger.info(f"Stage0 decode step {cur_len-L}: past_len={past_len}, pos_ids={pos.tolist()}, input_token={next_id}")
+            # logger.info(f"Stage0 decode step {cur_len-L}: past_len={past_len}, pos_ids={pos.tolist()}, input_token={next_id}")
             hidden, past0 = s0(new_input, pos, attn, past0, use_cache=True)  # [1,1,H]
             past0 = normalize_cache(past0)
-            if isinstance(past0, (list, tuple)) and past0 and isinstance(past0[0], (list, tuple)) and past0[0][0] is not None:
-                new_past_len = past0[0][0].shape[-2]
-            elif Cache is not None and isinstance(past0, Cache):
-                new_past_len = past0.get_seq_length(0)
-            else:
-                new_past_len = "N/A"
-            logger.info(f"Stage0: hidden shape={hidden.shape}, new_past_len={new_past_len}, past summary: {_describe_past(past0)}")
+            # if isinstance(past0, (list, tuple)) and past0 and isinstance(past0[0], (list, tuple)) and past0[0][0] is not None:
+            #     new_past_len = past0[0][0].shape[-2]
+            # elif Cache is not None and isinstance(past0, Cache):
+            #     new_past_len = past0.get_seq_length(0)
+            # else:
+            #     new_past_len = "N/A"
+            # logger.info(f"Stage0: hidden shape={hidden.shape}, new_past_len={new_past_len}, past summary: {_describe_past(past0)}")
 
         # send_prefill과 동일 (generated_tokens 전달)
         tx.send_decode_step(cur_len, hidden, session_id=session_id, max_length=max_length, generated_tokens=generated)  # [1,1,H]
         next_id = tx.recv_token()
         
         # 출력 품질 확인: 각 토큰 디코딩 및 부분 텍스트 출력
-        next_token_text = tok.decode([next_id], skip_special_tokens=True)
-        partial_text = tok.decode(generated + [next_id], skip_special_tokens=True)
-        logger.info(f"Stage0: received token={next_id} ('{next_token_text}') | Partial: '{partial_text[-50:]}'")
+        # next_token_text = tok.decode([next_id], skip_special_tokens=True)
+        # partial_text = tok.decode(generated + [next_id], skip_special_tokens=True)
+        # logger.info(f"Stage0: received token={next_id} ('{next_token_text}') | Partial: '{partial_text[-50:]}'")
 
         # EOS 토큰 체크 - 생성 중단
         if eos_token_id is not None and next_id == eos_token_id:
@@ -214,6 +214,7 @@ def run_rank0(args, device, splits):
         if next_id == last_token:
             consecutive_repeat_count += 1
             if consecutive_repeat_count >= 5:
+                next_token_text = tok.decode([next_id], skip_special_tokens=True)
                 logger.warning(f"Consecutive repetition detected (token {next_id}='{next_token_text}'), stopping generation")
                 break
         else:

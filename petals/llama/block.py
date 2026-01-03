@@ -96,24 +96,24 @@ class OptimizedLlamaAttention(LlamaAttention):
         cos, sin = self.rotary_emb(value_states, position_ids)
         
         # Rotary embedding shape 확인 로그
-        is_prefill = q_len > 1
-        if is_prefill:
-            logger.info(
-                f"OptimizedLlamaAttention: Prefill - rotary_emb output shapes: "
-                f"cos={cos.shape}, sin={sin.shape}, "
-                f"query_states={query_states.shape}, key_states={key_states.shape}, "
-                f"position_ids={position_ids.shape if position_ids is not None else None}"
-            )
+        # is_prefill = q_len > 1
+        # if is_prefill:
+        #     logger.info(
+        #         f"OptimizedLlamaAttention: Prefill - rotary_emb output shapes: "
+        #         f"cos={cos.shape}, sin={sin.shape}, "
+        #         f"query_states={query_states.shape}, key_states={key_states.shape}, "
+        #         f"position_ids={position_ids.shape if position_ids is not None else None}"
+        #     )
         
         cos, sin = cos.unsqueeze(1), sin.unsqueeze(1)
         
         # Unsqueeze 후 shape 확인
-        if is_prefill:
-            logger.info(
-                f"OptimizedLlamaAttention: Prefill - After unsqueeze(1): "
-                f"cos={cos.shape}, sin={sin.shape}, "
-                f"query_states={query_states.shape}, key_states={key_states.shape}"
-            )
+        # if is_prefill:
+        #     logger.info(
+        #         f"OptimizedLlamaAttention: Prefill - After unsqueeze(1): "
+        #         f"cos={cos.shape}, sin={sin.shape}, "
+        #         f"query_states={query_states.shape}, key_states={key_states.shape}"
+        #     )
 
         if q_len == 1 and torch.is_inference_mode_enabled() and hidden_states.device.type == "cuda":
             query_states, key_states = self._optimized_apply_rotary(query_states, key_states, cos, sin)

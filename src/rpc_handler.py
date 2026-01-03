@@ -173,15 +173,15 @@ class StageConnectionHandler(ConnectionHandler):
 
         # ========== PREFILL vs DECODE 구분 로그 ==========
         stage_name = "PREFILL" if is_prefill else "DECODE"
-        logger.info(f"[{session_id[:8]}] ========== {stage_name} ==========")
-        logger.info(f"[{session_id[:8]}] Input hidden_states: shape={hidden_states.shape}, dtype={hidden_states.dtype}, "
-                   f"min={hidden_states.min().item():.4f}, max={hidden_states.max().item():.4f}, "
-                   f"mean={hidden_states.mean().item():.4f}, std={hidden_states.std().item():.4f}")
+        # logger.info(f"[{session_id[:8]}] ========== {stage_name} ==========")
+        # logger.info(f"[{session_id[:8]}] Input hidden_states: shape={hidden_states.shape}, dtype={hidden_states.dtype}, "
+        #            f"min={hidden_states.min().item():.4f}, max={hidden_states.max().item():.4f}, "
+        #            f"mean={hidden_states.mean().item():.4f}, std={hidden_states.std().item():.4f}")
         
         if is_prefill:
             past_key_values = None
             past_len = 0
-            logger.info(f"[{session_id[:8]}] PREFILL: seq_len={seq_len}, cur_len={cur_len}, past_len=0 (no cache)")
+            # logger.info(f"[{session_id[:8]}] PREFILL: seq_len={seq_len}, cur_len={cur_len}, past_len=0 (no cache)")
         else:
             past_key_values = self._kv_cache.get(session_id)
             if past_key_values is None:
@@ -206,28 +206,28 @@ class StageConnectionHandler(ConnectionHandler):
                     f"hidden_shape={hidden_states.shape[1]}, expected={expected_past_len}, "
                     f"pkv_type={pkv_type}, cache_len={cache_len}"
                 )
-            else:
-                logger.info(
-                    f"[{session_id[:8]}] DECODE: seq_len={seq_len}, cur_len={cur_len}, past_len={past_len}, "
-                    f"hidden_shape={hidden_states.shape}"
-                )
+            # else:
+            #     logger.info(
+            #         f"[{session_id[:8]}] DECODE: seq_len={seq_len}, cur_len={cur_len}, past_len={past_len}, "
+            #         f"hidden_shape={hidden_states.shape}"
+            #     )
 
         attn_mask, pos_ids = self._build_masks(seq_len, cur_len, is_prefill, hidden_states, past_len)
         
         # Position IDs 로그
-        logger.info(f"[{session_id[:8]}] {stage_name}: Position IDs={pos_ids.tolist()}, past_len={past_len}")
+        # logger.info(f"[{session_id[:8]}] {stage_name}: Position IDs={pos_ids.tolist()}, past_len={past_len}")
 
         with torch.inference_mode():
             cfg_dtype = getattr(getattr(self.stage_model, "config", None), "torch_dtype", None)
             first_param = next(self.stage_model.parameters(), None)
             model_dtype = cfg_dtype or (first_param.dtype if first_param is not None else hidden_states.dtype)
             inputs = hidden_states.to(self.device, dtype=model_dtype)
-            logger.info(f"[{session_id[:8]}] {stage_name}: Converted inputs dtype={inputs.dtype} (model_dtype={model_dtype})")
+            # logger.info(f"[{session_id[:8]}] {stage_name}: Converted inputs dtype={inputs.dtype} (model_dtype={model_dtype})")
             
             # Convert past_key_values to match model dtype and device
             if past_key_values is not None:
                 past_key_values = self._convert_cache_dtype(past_key_values, model_dtype, self.device)
-                logger.info(f"[{session_id[:8]}] {stage_name}: Converted past_key_values to dtype={model_dtype}")
+                # logger.info(f"[{session_id[:8]}] {stage_name}: Converted past_key_values to dtype={model_dtype}")
             
             try:
                 outputs, new_past = self.stage_model(
@@ -250,8 +250,8 @@ class StageConnectionHandler(ConnectionHandler):
         if self.final_stage:
             logits = outputs
             # ========== FINAL STAGE (Stage3) 로그 ==========
-            logger.info(f"[{session_id[:8]}] {stage_name} [FINAL]: logits shape={logits.shape}, dtype={logits.dtype}, "
-                       f"min={logits.min().item():.2f}, max={logits.max().item():.2f}, mean={logits.mean().item():.2f}, std={logits.std().item():.2f}")
+            # logger.info(f"[{session_id[:8]}] {stage_name} [FINAL]: logits shape={logits.shape}, dtype={logits.dtype}, "
+            #            f"min={logits.min().item():.2f}, max={logits.max().item():.2f}, mean={logits.mean().item():.2f}, std={logits.std().item():.2f}")
             # logits shape: [batch, seq_len, vocab_size] 또는 [batch, vocab_size]
             if logits.dim() == 3:
                 # [batch, seq_len, vocab_size] -> [batch, vocab_size] (마지막 토큰)
@@ -263,9 +263,9 @@ class StageConnectionHandler(ConnectionHandler):
                 raise ValueError(f"Unexpected logits shape: {logits.shape}")
             
             # 디버깅: 샘플링 전 top5 logits 확인
-            top5_logits, top5_indices = next_token_logits.topk(5, dim=-1)
-            logger.info(f"[{session_id[:8]}] {stage_name} [FINAL]: Top5 logits before sampling: "
-                       f"indices={top5_indices[0].tolist()}, values={[f'{v:.2f}' for v in top5_logits[0].tolist()]}")
+            # top5_logits, top5_indices = next_token_logits.topk(5, dim=-1)
+            # logger.info(f"[{session_id[:8]}] {stage_name} [FINAL]: Top5 logits before sampling: "
+            #            f"indices={top5_indices[0].tolist()}, values={[f'{v:.2f}' for v in top5_logits[0].tolist()]}")
             
             next_token_id = int(self._sample_token(
                 next_token_logits, 
@@ -276,10 +276,10 @@ class StageConnectionHandler(ConnectionHandler):
                 generated_tokens=generated_tokens
             ))
             # 샘플링된 토큰의 확률 확인
-            probs = torch.softmax(next_token_logits / max(temperature, 1e-5), dim=-1)
-            sampled_prob = probs[0, next_token_id].item()
-            logger.info(f"[{session_id[:8]}] {stage_name} [FINAL]: Sampled token={next_token_id}, "
-                       f"probability={sampled_prob:.4f}, logits shape={next_token_logits.shape}")
+            # probs = torch.softmax(next_token_logits / max(temperature, 1e-5), dim=-1)
+            # sampled_prob = probs[0, next_token_id].item()
+            # logger.info(f"[{session_id[:8]}] {stage_name} [FINAL]: Sampled token={next_token_id}, "
+            #            f"probability={sampled_prob:.4f}, logits shape={next_token_logits.shape}")
             response_metadata = {"token_id": next_token_id, "session_id": session_id}
             token_tensor = torch.tensor([[next_token_id]], device=self.device, dtype=torch.long)
             serialized_token = serialize_torch_tensor(token_tensor.cpu())
@@ -290,10 +290,10 @@ class StageConnectionHandler(ConnectionHandler):
         else:
             hidden_out = outputs
             # ========== INTERMEDIATE STAGE (Stage1, Stage2) 로그 ==========
-            logger.info(f"[{session_id[:8]}] {stage_name} [INTERMEDIATE]: output shape={hidden_out.shape}, input shape={hidden_states.shape}")
-            logger.info(f"[{session_id[:8]}] {stage_name} [INTERMEDIATE]: output stats - "
-                       f"min={hidden_out.min().item():.4f}, max={hidden_out.max().item():.4f}, "
-                       f"mean={hidden_out.mean().item():.4f}, std={hidden_out.std().item():.4f}, dtype={hidden_out.dtype}")
+            # logger.info(f"[{session_id[:8]}] {stage_name} [INTERMEDIATE]: output shape={hidden_out.shape}, input shape={hidden_states.shape}")
+            # logger.info(f"[{session_id[:8]}] {stage_name} [INTERMEDIATE]: output stats - "
+            #            f"min={hidden_out.min().item():.4f}, max={hidden_out.max().item():.4f}, "
+            #            f"mean={hidden_out.mean().item():.4f}, std={hidden_out.std().item():.4f}, dtype={hidden_out.dtype}")
             
             # 활성화값 폭발 감지
             if abs(hidden_out.min().item()) > 100 or abs(hidden_out.max().item()) > 100:
@@ -311,15 +311,15 @@ class StageConnectionHandler(ConnectionHandler):
         """Apply temperature / nucleus / top-k sampling with repetition penalty."""
         # Greedy path to avoid div/0 and CUDA asserts when temperature==0
         if temperature <= 0.0:
-            last_logits = logits[:, -1, :] if logits.dim() == 3 else logits
-            topk_vals, topk_ids = last_logits.topk(5, dim=-1)
-            logger.info(f"Top5 (greedy) ids={topk_ids[0].tolist()}, vals={topk_vals[0].tolist()}")
+            # last_logits = logits[:, -1, :] if logits.dim() == 3 else logits
+            # topk_vals, topk_ids = last_logits.topk(5, dim=-1)
+            # logger.info(f"Top5 (greedy) ids={topk_ids[0].tolist()}, vals={topk_vals[0].tolist()}")
             return int(torch.argmax(logits, dim=-1).item())
 
         temp = max(temperature, 1e-5)
-        last_logits = logits[:, -1, :] if logits.dim() == 3 else logits
-        topk_vals, topk_ids = last_logits.topk(5, dim=-1)
-        logger.info(f"Top5 ids={topk_ids[0].tolist()}, vals={topk_vals[0].tolist()}, temp={temperature}, top_p={top_p}, top_k={top_k}")
+        # last_logits = logits[:, -1, :] if logits.dim() == 3 else logits
+        # topk_vals, topk_ids = last_logits.topk(5, dim=-1)
+        # logger.info(f"Top5 ids={topk_ids[0].tolist()}, vals={topk_vals[0].tolist()}, temp={temperature}, top_p={top_p}, top_k={top_k}")
         
         # Repetition penalty 적용 - 더 강하게
         if repetition_penalty != 1.0 and generated_tokens:
@@ -360,28 +360,28 @@ class StageConnectionHandler(ConnectionHandler):
             mask = torch.zeros_like(probs).scatter(-1, topk_idx, topk_probs)
             probs = mask
             # 디버깅: top_k 필터링 후 top5
-            top5_after_topk = probs.topk(5, dim=-1)
-            logger.debug(f"After top_k={top_k}: top5_indices={top5_after_topk.indices[0].tolist()}, top5_probs={top5_after_topk.values[0].tolist()}")
+            # top5_after_topk = probs.topk(5, dim=-1)
+            # logger.debug(f"After top_k={top_k}: top5_indices={top5_after_topk.indices[0].tolist()}, top5_probs={top5_after_topk.values[0].tolist()}")
 
         if 0.0 < top_p < 1.0:
             sorted_probs, sorted_idx = torch.sort(probs, descending=True, dim=-1)
             cum = torch.cumsum(sorted_probs, dim=-1)
             # 디버깅: top_p 필터링 전 통계
-            logger.debug(f"Before top_p={top_p}: sorted_probs[0][:5]={sorted_probs[0][:5].tolist()}, cumsum[0][:5]={cum[0][:5].tolist()}")
+            # logger.debug(f"Before top_p={top_p}: sorted_probs[0][:5]={sorted_probs[0][:5].tolist()}, cumsum[0][:5]={cum[0][:5].tolist()}")
             keep = cum <= top_p
             keep[..., 0] = True
             filtered = sorted_probs * keep
             filtered = filtered / filtered.sum(dim=-1, keepdim=True)
             probs = torch.zeros_like(probs).scatter(-1, sorted_idx, filtered)
             # 디버깅: top_p 필터링 후 top5
-            top5_after_topp = probs.topk(5, dim=-1)
-            logger.info(f"After top_p={top_p}: top5_indices={top5_after_topp.indices[0].tolist()}, top5_probs={[f'{v:.4f}' for v in top5_after_topp.values[0].tolist()]}, sampled_from={probs.nonzero().shape[0]} tokens")
+            # top5_after_topp = probs.topk(5, dim=-1)
+            # logger.info(f"After top_p={top_p}: top5_indices={top5_after_topp.indices[0].tolist()}, top5_probs={[f'{v:.4f}' for v in top5_after_topp.values[0].tolist()]}, sampled_from={probs.nonzero().shape[0]} tokens")
 
         probs = probs / probs.sum(dim=-1, keepdim=True)
         token = torch.multinomial(probs, 1)
         # 디버깅: 샘플링된 토큰의 확률
-        sampled_prob = probs[0, token.item()].item()
-        logger.info(f"Sampled token {token.item()} with probability {sampled_prob:.4f}")
+        # sampled_prob = probs[0, token.item()].item()
+        # logger.info(f"Sampled token {token.item()} with probability {sampled_prob:.4f}")
         return int(token.item())
 
     async def rpc_forward(
