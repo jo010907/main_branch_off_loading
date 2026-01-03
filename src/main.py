@@ -7,7 +7,7 @@ import time
 import torch
 from transformers import AutoTokenizer
 import logging
-from hivemind import DHT
+from hivemind import DHT, get_dht_time
 from hivemind.p2p import P2P
 from hivemind.utils.logging import get_logger
 
@@ -418,14 +418,14 @@ def run_stage_server(args, device, splits):
                 "ip": local_ip,
                 "rpc_port": args.rpc_port,
                 "dht_port": args.dht_port,
-                "timestamp": time.time(),
+                "timestamp": get_dht_time(),
             }
             # P2P Multiaddr 존재하면 peer_info에 추가
             if p2p_maddrs:
                 peer_info["p2p_maddrs"] = p2p_maddrs
 
             # DHT Network에 rpc 통신에 필요한 정보 저장
-            dht.store(f"mini_petals:stage{args.stage}", peer_info, expiration_time=time.time() + 3600)
+            dht.store(f"mini_petals:stage{args.stage}", peer_info, expiration_time=get_dht_time() + 3600)
 
             # P2P Daemon에 StageConnectionHandler의 rpc_* 메서드 등록
             await handler.add_p2p_handlers(p2p)

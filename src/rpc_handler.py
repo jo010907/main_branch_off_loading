@@ -6,11 +6,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, List, Optional
 
 import torch
-from hivemind import DHT, P2PContext, deserialize_torch_tensor, serialize_torch_tensor
-try:
-    from hivemind import MSGPackSerializer
-except ImportError:
-    from hivemind.utils.serializer import MSGPackSerializer
+from hivemind import DHT, P2PContext, deserialize_torch_tensor, serialize_torch_tensor, MSGPackSerializer
 from hivemind.compression.serialization import deserialize_tensor_stream
 
 # Use asyncio.timeout for Python 3.11+, fallback to async_timeout for older versions

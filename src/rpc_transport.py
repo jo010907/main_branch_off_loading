@@ -10,11 +10,7 @@ import time
 from typing import Dict, List, Optional, Set, Tuple
 
 import torch
-from hivemind import DHT, PeerID, serialize_torch_tensor
-try:
-    from hivemind import MSGPackSerializer
-except ImportError:
-    from hivemind.utils.serializer import MSGPackSerializer
+from hivemind import DHT, PeerID, serialize_torch_tensor, MSGPackSerializer
 from hivemind.compression.serialization import deserialize_torch_tensor
 from hivemind.p2p import P2P
 from hivemind.p2p.p2p_daemon_bindings.control import DEFAULT_MAX_MSG_SIZE, MAX_UNARY_PAYLOAD_SIZE
