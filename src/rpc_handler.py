@@ -154,6 +154,7 @@ class StageConnectionHandler(ConnectionHandler):
         if session_id is None:
             raise ValueError("request.metadata must contain session_id")
 
+        is_replay = bool(metadata.get("is_replay", False))  # Fault tolerance: replay 모드
         is_prefill = bool(metadata.get("is_prefill", False))
         seq_len = int(metadata.get("seq_len", hidden_states.shape[1]))
         cur_len = int(metadata.get("cur_len", seq_len))
@@ -165,6 +166,8 @@ class StageConnectionHandler(ConnectionHandler):
 
         # ========== PREFILL vs DECODE 구분 로그 ==========
         stage_name = "PREFILL" if is_prefill else "DECODE"
+        if is_replay:
+            logger.info(f"[{session_id[:8]}] REPLAY MODE: Restoring KV cache for {stage_name}")
         # logger.info(f"[{session_id[:8]}] ========== {stage_name} ==========")
         # logger.info(f"[{session_id[:8]}] Input hidden_states: shape={hidden_states.shape}, dtype={hidden_states.dtype}, "
         #            f"min={hidden_states.min().item():.4f}, max={hidden_states.max().item():.4f}, "
@@ -237,6 +240,7 @@ class StageConnectionHandler(ConnectionHandler):
                 )
                 raise RuntimeError("stage_model raised StopIteration") from e
 
+        # KV 캐시 업데이트 (replay 모드에서도 복구를 위해 필요)
         self._kv_cache[session_id] = new_past
 
         if self.final_stage:
