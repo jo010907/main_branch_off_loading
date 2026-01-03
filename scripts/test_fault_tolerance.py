@@ -10,10 +10,8 @@ Fault Tolerance 테스트 스크립트
 """
 
 import argparse
-import signal
 import sys
 import time
-import subprocess
 from pathlib import Path
 
 # 프로젝트 루트를 Python path에 추가
@@ -21,7 +19,6 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.main import run_rank0
-from src.utils import _format_initial_peers
 
 
 def test_fault_tolerance():
