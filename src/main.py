@@ -94,8 +94,12 @@ def run_rank0(args, device, splits):
         return str(type(past))
 
     # 1. Initialize
-    full = load_stage_model(args.model, device, role="stage0", end=splits[0], dtype=args.dtype)
-    s0 = Stage0(full, splits[0]).to(device) # load to GPU
+    enable_offload = getattr(args, 'enable_offload', False)
+    full = load_stage_model(args.model, device, role="stage0", end=splits[0], dtype=args.dtype, enable_offload=enable_offload)
+    if enable_offload:
+        s0 = Stage0(full, splits[0], enable_offload=True, gpu_device=device)  # CPU에 유지, forward 시 GPU로 이동
+    else:
+        s0 = Stage0(full, splits[0], enable_offload=False, gpu_device=device).to(device)  # GPU에 직접 로드
 
     # connect to DHT Network with initial(stage1) DHT peer address
     dht_peers = _format_initial_peers(args.dht_initial_peers)
@@ -288,20 +292,30 @@ def run_rank0(args, device, splits):
 @torch.inference_mode()
 def run_stage_server(args, device, splits):
     """Run a server stage (1, 2, or 3)."""
+    enable_offload = getattr(args, 'enable_offload', False)
     if args.stage == 1:
         start, end = splits[0], splits[1]
-        full = load_stage_model(args.model, device, role="segment", start=start, end=end, dtype=args.dtype)
-        stage_model = StageSegment(full, start, end).to(device)
+        full = load_stage_model(args.model, device, role="segment", start=start, end=end, dtype=args.dtype, enable_offload=enable_offload)
+        if enable_offload:
+            stage_model = StageSegment(full, start, end, enable_offload=True, gpu_device=device)  # CPU에 유지
+        else:
+            stage_model = StageSegment(full, start, end, enable_offload=False, gpu_device=device).to(device)  # GPU에 직접 로드
         final_stage = False
     elif args.stage == 2:
         start, end = splits[1], splits[2]
-        full = load_stage_model(args.model, device, role="segment", start=start, end=end, dtype=args.dtype)
-        stage_model = StageSegment(full, start, end).to(device)
+        full = load_stage_model(args.model, device, role="segment", start=start, end=end, dtype=args.dtype, enable_offload=enable_offload)
+        if enable_offload:
+            stage_model = StageSegment(full, start, end, enable_offload=True, gpu_device=device)  # CPU에 유지
+        else:
+            stage_model = StageSegment(full, start, end, enable_offload=False, gpu_device=device).to(device)  # GPU에 직접 로드
         final_stage = False
     elif args.stage == 3:
         start = splits[2]
-        full = load_stage_model(args.model, device, role="last", start=start, dtype=args.dtype)
-        stage_model = StageLast(full, start).to(device)
+        full = load_stage_model(args.model, device, role="last", start=start, dtype=args.dtype, enable_offload=enable_offload)
+        if enable_offload:
+            stage_model = StageLast(full, start, enable_offload=True, gpu_device=device)  # CPU에 유지
+        else:
+            stage_model = StageLast(full, start, enable_offload=False, gpu_device=device).to(device)  # GPU에 직접 로드
         final_stage = True
     else:
         raise ValueError("stage must be 1, 2, or 3 for server")
@@ -475,6 +489,8 @@ def main():
     parser.add_argument('--temperature', type=float, default=1.0, help='Sampling temperature (client->stage3)')
     parser.add_argument('--top_p', type=float, default=0.92, help='Nucleus sampling p')
     parser.add_argument('--top_k', type=int, default=50, help='Top-k sampling (0=disabled)')
+    parser.add_argument('--enable_offload', action='store_true', 
+                       help='Enable CPU off-loading: model parameters stored in CPU/RAM, moved to GPU only during forward pass')
     
     args = parser.parse_args()
 
