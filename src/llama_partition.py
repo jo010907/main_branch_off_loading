@@ -76,11 +76,11 @@ def _from_cache(present):
 class Stage0(nn.Module):
     """LLaMA-only Stage0; keep Cache end-to-end (no manual recompute)."""
 
-    def __init__(self, full, end: int):
+    def __init__(self, full, end: int, enable_offload: bool = False, device: torch.device = None):
         super().__init__()
         model_type = getattr(full.config, "model_type", "").lower()
-        if "llama" not in model_type and "mistral" not in model_type and "mixtral" not in model_type:
-            raise ValueError("Only LLaMA-style models are supported in Stage0.")
+        if "llama" not in model_type and "mistral" not in model_type and "mixtral" not in model_type and "gpt2" not in model_type:
+            raise ValueError("Only LLaMA-style models or GPT-2 are supported in Stage0.")
 
         if hasattr(full, "model") and hasattr(full.model, "embed_tokens"):
             self.embed_tokens = full.model.embed_tokens
@@ -94,7 +94,9 @@ class Stage0(nn.Module):
 
         self.layers = _convert_layers(nn.ModuleList(raw_layers), full.config)
         self.config = full.config
-        logger.info(f"Stage0 initialized with {len(self.layers)} layers (end={end})")
+        self.enable_offload = enable_offload
+        self.device = device
+        logger.info(f"Stage0 initialized with {len(self.layers)} layers (end={end}), offload={enable_offload}")
 
     def forward(
         self,
@@ -104,6 +106,21 @@ class Stage0(nn.Module):
         past_key_values: Optional[Tuple] = None,
         use_cache: bool = True,
     ):
+        # Offloading: forward 전에 모델을 GPU로 이동
+        if self.enable_offload and self.device is not None:
+            self.to(self.device)
+            input_ids = input_ids.to(self.device)
+            if position_ids is not None:
+                position_ids = position_ids.to(self.device)
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(self.device)
+            if past_key_values is not None:
+                past_key_values = tuple(
+                    tuple(kv.to(self.device) if kv is not None else None for kv in layer_past)
+                    if isinstance(layer_past, (tuple, list)) else layer_past.to(self.device) if layer_past is not None else None
+                    for layer_past in past_key_values
+                )
+        
         x = self.embed_tokens(input_ids)
         cache_obj = None
         tuple_cache = []
@@ -132,6 +149,16 @@ class Stage0(nn.Module):
                 #     logger.info(f"Stage0 layer {i} present cache_len={cache_len}")
                 tuple_cache.append(present)
 
+        # Offloading: forward 후에 모델을 CPU로 이동
+        if self.enable_offload:
+            self.cpu()
+            x = x.cpu()
+            tuple_cache = tuple(
+                tuple(kv.cpu() if kv is not None else None for kv in layer_past)
+                if isinstance(layer_past, (tuple, list)) else layer_past.cpu() if layer_past is not None else None
+                for layer_past in tuple_cache
+            )
+
         if not use_cache:
             return x, None
         return x, tuple(tuple_cache)
@@ -140,11 +167,11 @@ class Stage0(nn.Module):
 class StageSegment(nn.Module):
     """LLaMA-only middle segment; keep Cache end-to-end."""
 
-    def __init__(self, full, start: int, end: int):
+    def __init__(self, full, start: int, end: int, enable_offload: bool = False, device: torch.device = None):
         super().__init__()
         model_type = getattr(full.config, "model_type", "").lower()
-        if "llama" not in model_type and "mistral" not in model_type and "mixtral" not in model_type:
-            raise ValueError("Only LLaMA-style models are supported in StageSegment.")
+        if "llama" not in model_type and "mistral" not in model_type and "mixtral" not in model_type and "gpt2" not in model_type:
+            raise ValueError("Only LLaMA-style models or GPT-2 are supported in StageSegment.")
 
         if hasattr(full, "model") and hasattr(full.model, "layers"):
             raw_layers = full.model.layers  # already pruned in load_stage_model
@@ -155,10 +182,12 @@ class StageSegment(nn.Module):
 
         self.layers = _convert_layers(nn.ModuleList(raw_layers), full.config)
         self.config = full.config
+        self.enable_offload = enable_offload
+        self.device = device
         if len(self.layers) == 0:
-            logger.warning(f"StageSegment initialized with 0 layers (start={start}, end={end})")
+            logger.warning(f"StageSegment initialized with 0 layers (start={start}, end={end}), offload={enable_offload}")
         else:
-            logger.info(f"StageSegment initialized with {len(self.layers)} layers (start={start}, end={end})")
+            logger.info(f"StageSegment initialized with {len(self.layers)} layers (start={start}, end={end}), offload={enable_offload}")
 
     def forward(
         self,
@@ -168,6 +197,21 @@ class StageSegment(nn.Module):
         past_key_values: Optional[Tuple] = None,
         use_cache: bool = True,
     ):
+        # Offloading: forward 전에 모델을 GPU로 이동
+        if self.enable_offload and self.device is not None:
+            self.to(self.device)
+            hidden_states = hidden_states.to(self.device)
+            if position_ids is not None:
+                position_ids = position_ids.to(self.device)
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(self.device)
+            if past_key_values is not None:
+                past_key_values = tuple(
+                    tuple(kv.to(self.device) if kv is not None else None for kv in layer_past)
+                    if isinstance(layer_past, (tuple, list)) else layer_past.to(self.device) if layer_past is not None else None
+                    for layer_past in past_key_values
+                )
+        
         x = hidden_states
         tuple_cache = []
 
@@ -195,6 +239,16 @@ class StageSegment(nn.Module):
                     # logger.info(f"StageSegment layer {i} present cache_len={cache_len}")
                 tuple_cache.append(present)
 
+        # Offloading: forward 후에 모델을 CPU로 이동
+        if self.enable_offload:
+            self.cpu()
+            x = x.cpu()
+            tuple_cache = tuple(
+                tuple(kv.cpu() if kv is not None else None for kv in layer_past)
+                if isinstance(layer_past, (tuple, list)) else layer_past.cpu() if layer_past is not None else None
+                for layer_past in tuple_cache
+            )
+
         if not use_cache:
             return x, None
         return x, tuple(tuple_cache)
@@ -203,11 +257,11 @@ class StageSegment(nn.Module):
 class StageLast(nn.Module):
     """LLaMA-only last stage; keep Cache end-to-end."""
 
-    def __init__(self, full, start: int):
+    def __init__(self, full, start: int, enable_offload: bool = False, device: torch.device = None):
         super().__init__()
         model_type = getattr(full.config, "model_type", "").lower()
-        if "llama" not in model_type and "mistral" not in model_type and "mixtral" not in model_type:
-            raise ValueError("Only LLaMA-style models are supported in StageLast.")
+        if "llama" not in model_type and "mistral" not in model_type and "mixtral" not in model_type and "gpt2" not in model_type:
+            raise ValueError("Only LLaMA-style models or GPT-2 are supported in StageLast.")
 
         if hasattr(full, "model") and hasattr(full.model, "layers"):
             raw_layers = full.model.layers  # already pruned in load_stage_model
@@ -226,7 +280,9 @@ class StageLast(nn.Module):
         self.layers = _convert_layers(nn.ModuleList(raw_layers), full.config)
         self.lm_head = full.lm_head
         self.config = full.config
-        logger.info(f"StageLast initialized with {len(self.layers)} layers (start={start})")
+        self.enable_offload = enable_offload
+        self.device = device
+        logger.info(f"StageLast initialized with {len(self.layers)} layers (start={start}), offload={enable_offload}")
 
     def forward(
         self,
@@ -236,6 +292,21 @@ class StageLast(nn.Module):
         past_key_values: Optional[Tuple] = None,
         use_cache: bool = True,
     ):
+        # Offloading: forward 전에 모델을 GPU로 이동
+        if self.enable_offload and self.device is not None:
+            self.to(self.device)
+            hidden_states = hidden_states.to(self.device)
+            if position_ids is not None:
+                position_ids = position_ids.to(self.device)
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(self.device)
+            if past_key_values is not None:
+                past_key_values = tuple(
+                    tuple(kv.to(self.device) if kv is not None else None for kv in layer_past)
+                    if isinstance(layer_past, (tuple, list)) else layer_past.to(self.device) if layer_past is not None else None
+                    for layer_past in past_key_values
+                )
+        
         x = hidden_states
         tuple_cache = []
 
@@ -268,6 +339,17 @@ class StageLast(nn.Module):
         if hasattr(self.lm_head, 'weight') and self.lm_head.weight is not None:
             x = x.to(dtype=self.lm_head.weight.dtype)
         logits = self.lm_head(x)
+        
+        # Offloading: forward 후에 모델을 CPU로 이동
+        if self.enable_offload:
+            self.cpu()
+            logits = logits.cpu()
+            tuple_cache = tuple(
+                tuple(kv.cpu() if kv is not None else None for kv in layer_past)
+                if isinstance(layer_past, (tuple, list)) else layer_past.cpu() if layer_past is not None else None
+                for layer_past in tuple_cache
+            )
+        
         if not use_cache:
             return logits, None
         return logits, tuple(tuple_cache)
@@ -281,6 +363,7 @@ def load_stage_model(
     start: int = 0,
     end: Optional[int] = None,
     dtype=torch.float16,
+    enable_offload: bool = False,
 ):
     """
     Load only the layers needed for a stage to reduce memory (LLaMA-only).
@@ -288,6 +371,7 @@ def load_stage_model(
       - 'stage0': keep embeddings + layers[:end], drop head/norm
       - 'segment': keep layers[start:end], drop embeddings/head/norm
       - 'last': keep layers[start:], norm, lm_head
+    enable_offload: If True, load model to CPU instead of device (for offloading)
     """
     full = AutoModelForCausalLM.from_pretrained(
         model_name,
@@ -333,9 +417,13 @@ def load_stage_model(
         num_layers = len(full.transformer.h)
     else:
         num_layers = -1
-    logger.info(f"load_stage_model: role={role}, layers={num_layers}, start={start}, end={end}")
+    logger.info(f"load_stage_model: role={role}, layers={num_layers}, start={start}, end={end}, offload={enable_offload}")
     if num_layers == 0:
         raise ValueError(f"Pruned model has 0 layers for role={role} (start={start}, end={end}). Check --splits.")
 
-    full = full.to(device)
+    # Offloading이 활성화되면 CPU에 로드, 아니면 지정된 device에 로드
+    if enable_offload:
+        full = full.to("cpu")
+    else:
+        full = full.to(device)
     return full

@@ -162,7 +162,7 @@ def wait_for_stage_ready(process, stage_name, stage_num, log_handle=None, quiet=
 
 
 def run_stage(stage_num, model, splits, dht_maddr, dht_port, rpc_port, 
-               prompt=None, max_tokens=None, log_file=None):
+               prompt=None, max_tokens=None, log_file=None, enable_offload=False):
     """Stage 실행"""
     # 프로젝트 루트로 이동
     script_dir = Path(__file__).parent
@@ -177,6 +177,9 @@ def run_stage(stage_num, model, splits, dht_maddr, dht_port, rpc_port,
         "--dht_port", str(dht_port),
         "--rpc_port", str(rpc_port),
     ]
+    
+    if enable_offload:
+        cmd.append("--enable_offload")
     
     if dht_maddr:
         cmd.extend(["--dht_initial_peers", dht_maddr])
@@ -269,6 +272,8 @@ def main():
     parser.add_argument("--dht_base_port", type=int, default=8000, help="DHT 기본 포트")
     parser.add_argument("--rpc_base_port", type=int, default=8001, help="RPC 기본 포트")
     parser.add_argument("--quiet", action="store_true", help="콘솔 출력 없이 로그 파일만 사용")
+    parser.add_argument("--enable_offload", action="store_true",
+                       help="Enable offloading: store model in CPU/RAM and move to GPU only during forward pass")
     
     args = parser.parse_args()
     
@@ -301,7 +306,7 @@ def main():
         stage1, log1 = run_stage(
             1, args.model, args.splits, None,
             args.dht_base_port, args.rpc_base_port,
-            log_file="stage1.log"
+            log_file="stage1.log", enable_offload=args.enable_offload
         )
         processes.append(stage1)
         if log1:
@@ -488,7 +493,7 @@ def main():
         stage2, log2 = run_stage(
             2, args.model, args.splits, dht_maddr,
             args.dht_base_port + 2, args.rpc_base_port + 2,
-            log_file="stage2.log"
+            log_file="stage2.log", enable_offload=args.enable_offload
         )
         processes.append(stage2)
         if log2:
@@ -516,7 +521,7 @@ def main():
         stage3, log3 = run_stage(
             3, args.model, args.splits, dht_maddr,
             args.dht_base_port + 4, args.rpc_base_port + 4,
-            log_file="stage3.log"
+            log_file="stage3.log", enable_offload=args.enable_offload
         )
         processes.append(stage3)
         if log3:
@@ -545,7 +550,7 @@ def main():
             0, args.model, args.splits, dht_maddr,
             args.dht_base_port + 6, args.rpc_base_port + 6,
             prompt=args.prompt, max_tokens=args.max_tokens,
-            log_file="stage0.log"
+            log_file="stage0.log", enable_offload=args.enable_offload
         )
         processes.append(stage0)
         if log0:
