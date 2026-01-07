@@ -10,7 +10,11 @@
 
 ## 1단계: 초기 설정 (모든 인스턴스에서 실행)
 
-각 인스턴스(`stage-1`, `stage-2`, `stage-3`, `stage-0`)에서 VSCode로 접속 후:
+**중요**: 다음 명령어들은 **엘리스 클라우드 인스턴스 내부**에서 실행해야 합니다. 
+- VSCode로 직접 접속한 경우: 인스턴스 내부 터미널에서 실행
+- SSH로 접속한 경우: SSH 연결 후 인스턴스 내부에서 실행
+
+각 인스턴스(`stage-1`, `stage-2`, `stage-3`, `stage-0`)에서:
 
 ```bash
 # 코드 클론
@@ -21,10 +25,73 @@ git checkout Jaewon
 # 초기 설치 스크립트 실행
 ./scripts/initial_install.sh
 
+# 가상환경 활성화 (스크립트가 자동으로 생성함)
+source venv/bin/activate
+
+# Hugging Face CLI 설치 (hf 명령어가 없는 경우)
+pip install huggingface_hub[cli]
+
 # Hugging Face 인증 (LLaMA 모델 다운로드용)
 hf auth login
 # 토큰 입력: <your_huggingface_token>
 ```
+
+**참고**: `hf auth login` 명령어가 작동하지 않으면:
+```bash
+# 가상환경이 활성화되어 있는지 확인
+source venv/bin/activate
+
+# Hugging Face CLI 설치 확인
+pip install --upgrade huggingface_hub[cli]
+
+# 또는 환경 변수로 토큰 설정
+export HF_TOKEN="<your_huggingface_token>"
+```
+
+**Windows 로컬 환경에서 실행하는 경우** (권장하지 않음):
+```powershell
+# Windows에서는 py 명령어 사용
+py -m pip install huggingface_hub[cli]
+```
+
+---
+
+## 1-1단계: SSH 연결 (VSCode 외부에서 접속하는 경우)
+
+엘리스 클라우드에서 SSH 연결 가이드를 확인하면 다음 정보를 제공합니다:
+
+**SSH 연결 정보:**
+- 사용자 이름: `elicer`
+- 접속 주소: `central-01.tcp.tunnel.elice.io:21283` (인스턴스마다 다를 수 있음)
+- 비밀 키: `elice-cloud-ondemand-{user_key_id}.pem`
+
+**SSH 연결 방법:**
+
+1. **비밀키 생성** (엘리스 클라우드 콘솔에서):
+   - "비밀키 관리" 메뉴에서 비밀키 생성
+   - 생성된 `.pem` 파일을 다운로드
+   - 파일을 `C:\Users\<username>\.ssh\` 디렉토리에 저장
+
+2. **SSH 연결** (Windows PowerShell):
+   ```powershell
+   # 비밀키 파일이 있는 디렉토리로 이동
+   cd ~/.ssh
+   
+   # SSH 연결 (절대 경로 사용 권장)
+   ssh -i "C:\Users\test123\.ssh\elice-cloud-ondemand-{user_key_id}.pem" elicer@central-01.tcp.tunnel.elice.io -p 21283
+   ```
+
+3. **호스트 인증 확인**:
+   - 첫 연결 시 "Are you sure you want to continue connecting (yes/no/[fingerprint])?" 메시지가 나오면 `yes` 입력
+
+4. **인스턴스 내부에서 작업**:
+   - SSH 연결이 성공하면 인스턴스 내부 Linux 환경에서 작업합니다
+   - 여기서 `pip`, `python`, `git` 등의 명령어를 사용할 수 있습니다
+
+**참고**: 
+- 각 인스턴스마다 다른 포트와 주소를 사용합니다
+- VSCode로 직접 접속하는 경우 이 단계는 건너뛸 수 있습니다
+- **중요**: `pip install` 등의 명령어는 인스턴스 내부에서 실행해야 합니다 (Windows 로컬이 아님)
 
 ---
 
@@ -281,12 +348,40 @@ tail -f stage1.log | grep "handlers registered"
 
 ### 3. 모델 다운로드 실패
 
-Hugging Face 인증 확인:
+**인스턴스 내부에서 실행해야 합니다** (SSH 연결 후 또는 VSCode 터미널에서):
 
 ```bash
+# 가상환경 활성화 확인
+source venv/bin/activate
+
+# Hugging Face CLI 설치 확인
+pip install --upgrade huggingface_hub[cli]
+
+# 인증
 hf auth login
 # 토큰 재입력
+
+# 또는 환경 변수로 토큰 설정
+export HF_TOKEN="<your_huggingface_token>"
 ```
+
+**Windows 로컬에서 실행한 경우**:
+- Windows PowerShell에서는 `pip` 대신 `py -m pip` 사용
+- 하지만 **권장하지 않음**: 인스턴스 내부에서 실행하는 것이 올바른 방법입니다
+
+### 4. SSH 연결 실패
+
+**비밀키 파일을 찾을 수 없는 경우:**
+```bash
+# 비밀키 파일 경로 확인
+ls -la ~/.ssh/elice-cloud-ondemand-*.pem
+
+# 절대 경로 사용
+ssh -i "C:\Users\<username>\.ssh\elice-cloud-ondemand-{user_key_id}.pem" elicer@central-01.tcp.tunnel.elice.io -p 21283
+```
+
+**호스트 인증 확인:**
+- 첫 연결 시 `yes` 입력하여 호스트 키를 known_hosts에 추가
 
 ### 4. 포트 충돌
 
